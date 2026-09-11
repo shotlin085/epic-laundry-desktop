@@ -97,6 +97,7 @@ import { connectCloudSession, disconnectCloudSession, fetchConnectedVendorProfil
 import { CloudClientError } from './modules/marketplace/cloud-client.js';
 import { pullCloudOrders } from './modules/marketplace/cloud-order-sync.js';
 import { acceptCloudOrder, CloudOrderConflictError, rejectCloudOrder } from './modules/marketplace/cloud-order-actions.js';
+import { advanceCloudOrderStage, CLOUD_ORDER_STAGES, cloudProgressErrorHint, proposeCloudReconciliation, syncCloudOrderDetail, type CloudOrderStage } from './modules/marketplace/cloud-order-progress.js';
 import { renderCanonicalTaxInvoice } from './modules/gst/canonical-invoice-print.js';
 import { approveTaxPolicyRule, createTaxPolicyRule, listTaxPolicyRules, retireTaxPolicyRule, saveSupplierTaxProfile, supplierTaxProfile, taxReadiness } from './modules/gst/tax-policy.js';
 import { auditGarmentAssets } from './modules/laundry/garment-assets.js';
@@ -186,6 +187,45 @@ const marketplaceOrderParams = {
 const marketplaceCloudRejectBody = {
   type: 'object', required: ['reason'],
   properties: { reason: { type: 'string', minLength: 1, maxLength: 500 } }, additionalProperties: false,
+} as const;
+const marketplaceCloudStageBody = {
+  type: 'object', required: ['stage'],
+  properties: {
+    stage: { type: 'string', enum: ['RECEIVED_AT_VENDOR', 'WASHING', 'DRYING', 'IRONING', 'PACKED'] },
+    deliverySlotLabel: { type: 'string', maxLength: 100 },
+    deliverySlotAt: { type: 'string', minLength: 1, maxLength: 40 },
+  }, additionalProperties: false,
+} as const;
+const marketplaceCloudReconcileBody = {
+  type: 'object', required: ['photoUrls'],
+  properties: {
+    // The marketplace refuses an unevidenced recount, so this is required all
+    // the way through rather than being quietly defaulted to an empty list.
+    photoUrls: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1, maxLength: 2000 } },
+    lines: {
+      type: 'array',
+      items: {
+        type: 'object', required: ['orderLineId'],
+        properties: {
+          orderLineId: { type: 'string', minLength: 1, maxLength: 80 },
+          confirmedQuantity: { type: 'integer', minimum: 0 },
+          newGarmentTypeId: { type: 'string', minLength: 1, maxLength: 80 },
+        }, additionalProperties: false,
+      },
+    },
+    newLines: {
+      type: 'array',
+      items: {
+        type: 'object', required: ['garmentTypeId', 'quantity'],
+        properties: {
+          garmentTypeId: { type: 'string', minLength: 1, maxLength: 80 },
+          quantity: { type: 'number', exclusiveMinimum: 0 },
+        }, additionalProperties: false,
+      },
+    },
+    confirmedWeightKg: { type: 'number', minimum: 0.1 },
+    reason: { type: 'string', maxLength: 500 },
+  }, additionalProperties: false,
 } as const;
 const settlementBatchParams = { type: 'object', required: ['batchId'], properties: { batchId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false } as const;
 const payoutAttemptParams = { type: 'object', required: ['attemptId'], properties: { attemptId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false } as const;
@@ -431,6 +471,10 @@ export function registerApi(app: FastifyInstance) {
     if (error instanceof Error && error.message === 'CLOUD_ORDER_REJECT_REASON_REQUIRED') return 400;
     if (error instanceof Error && error.message === 'CLOUD_ORDER_STATUS_UNREADABLE') return 502;
     if (error instanceof CloudClientError) {
+      // The marketplace refusing an action because of the order's current
+      // state is a precondition the operator can act on, not a bad request.
+      // Checked first: the generic fallthrough below would otherwise swallow it.
+      if (error.remoteCode === 'INVALID_STAGE' || error.remoteCode === 'INVALID_TRANSITION') return 409;
       if (error.code === 'CLOUD_AUTH_FAILED') return 401;
       if (error.code === 'CLOUD_NOT_CONFIGURED') return 409;
       if (error.code === 'CLOUD_TIMEOUT' || error.code === 'CLOUD_UNREACHABLE') return 502;
@@ -440,6 +484,8 @@ export function registerApi(app: FastifyInstance) {
     if (error instanceof Error && error.message === 'CLOUD_CONNECT_INPUT_REQUIRED') return 400;
     if (error instanceof Error && error.message.startsWith('CLOUD_ORDER_UNKNOWN_STATUS')) return 502;
     if (error instanceof Error && error.message === 'CLOUD_ORDER_LIST_UNEXPECTED_RESPONSE') return 502;
+    if (error instanceof Error && error.message === 'CLOUD_ORDER_DETAIL_UNEXPECTED_RESPONSE') return 502;
+    if (error instanceof Error && (error.message === 'CLOUD_RECONCILIATION_EVIDENCE_REQUIRED' || error.message === 'CLOUD_RECONCILIATION_EMPTY' || error.message === 'CLOUD_ORDER_STAGE_INVALID')) return 400;
     return 400;
   };
   const cloudErrorBody = (error: unknown) => {
@@ -450,7 +496,10 @@ export function registerApi(app: FastifyInstance) {
     }
     const code = error instanceof CloudClientError ? error.code : (error instanceof Error ? error.message : 'CLOUD_ERROR');
     const message = error instanceof Error ? error.message : String(error || 'Cloud connector operation failed');
-    return { code, error: message };
+    const hint = cloudProgressErrorHint(error);
+    // `remoteCode` is the marketplace's own reason; keeping it distinct from
+    // our transport-level code is what lets a caller act on the precondition.
+    return { code, error: message, ...(error instanceof CloudClientError && error.remoteCode ? { remoteCode: error.remoteCode } : {}), ...(hint ? { hint } : {}) };
   };
 
   app.get('/api/auth/bootstrap-status', async () => ({ needsBootstrap: store.authIdentityCount() === 0 }));
@@ -821,6 +870,18 @@ export function registerApi(app: FastifyInstance) {
   });
   app.post('/api/marketplace/cloud/orders/:externalOrderId/reject', { schema: { params: marketplaceOrderParams, body: marketplaceCloudRejectBody }, preHandler: [guard, allow('orders.edit')] }, async (req: any, rep: any) => {
     try { return await rejectCloudOrder(req.auth!.tenant, req.auth!.actor, req.params.externalOrderId, String((req.body as any)?.reason || '')); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/marketplace/cloud/orders/:externalOrderId/detail-sync', { schema: { params: marketplaceOrderParams }, preHandler: [guard, allow('orders.read')] }, async (req: any, rep: any) => {
+    try { return await syncCloudOrderDetail(req.auth!.tenant, req.auth!.actor, req.params.externalOrderId); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/marketplace/cloud/orders/:externalOrderId/stage', { schema: { params: marketplaceOrderParams, body: marketplaceCloudStageBody }, preHandler: [guard, allow('orders.edit')] }, async (req: any, rep: any) => {
+    try { return await advanceCloudOrderStage(req.auth!.tenant, req.auth!.actor, req.params.externalOrderId, (req.body as any).stage as CloudOrderStage, { deliverySlotLabel: (req.body as any).deliverySlotLabel, deliverySlotAt: (req.body as any).deliverySlotAt }); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/marketplace/cloud/orders/:externalOrderId/reconcile', { schema: { params: marketplaceOrderParams, body: marketplaceCloudReconcileBody }, preHandler: [guard, allow('orders.edit')] }, async (req: any, rep: any) => {
+    try { return await proposeCloudReconciliation(req.auth!.tenant, req.auth!.actor, req.params.externalOrderId, req.body as any); }
     catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   app.get('/api/marketplace/catalogue/mappings', { schema: { querystring: marketplaceCatalogueQuery }, preHandler: [guard, allow('catalogue.read')] }, async (req: any) =>

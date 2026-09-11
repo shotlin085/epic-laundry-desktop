@@ -352,18 +352,90 @@ visible label in both enabled and disabled states. The repo's a11y audit had
 passed regardless, since it only checks that a name exists, not that it matches
 the label.
 
+## 4e. Reconciliation — the recount, and the invariant it protects (2026-09-11)
+
+`cloud-order-progress.ts` adds order detail, outward stage progression, and
+the reconciliation proposal.
+
+**The invariant (mandate §33): the customer's original request is never
+overwritten.** Three separate rows now exist per cloud order, reusing Desktop's
+existing, already-tested order-truth domain rather than a parallel model:
+
+1. the **original request**, recorded immutably the first time an order is
+   pulled (`createMarketplaceOrderRequest`, which returns the existing row
+   unchanged on every later sync, so re-pulling can never rewrite it) — this
+   was previously missing for cloud orders, which is what made the rest of the
+   chain impossible;
+2. the **physical intake** — what was actually counted, stored with the
+   evidence and carrying `originalEstimate` alongside, so the difference stays
+   explainable side by side;
+3. the **reassessment** — the price change, carrying the marketplace's own
+   computed amounts.
+
+**Desktop never prices the recount.** The backend resolves rates from THIS
+vendor's own active, approved rates and refuses a client-supplied price; the
+amounts recorded locally are the ones the customer will actually be asked to
+approve. A test asserts the outbound body contains no `rate_paise` at all.
+
+**Desktop never approves on the customer's behalf.** The reassessment is
+created with `tolerancePaise: 0`, so no tolerance band can silently
+auto-approve part of a marketplace price change. When the recount produces a
+zero delta, no reassessment row is created at all — the local domain would
+have marked it `Approved` immediately, which would claim a decision the
+marketplace has not granted (the order is still `RECONCILIATION_PENDING`
+there). The physical count is still recorded.
+
+**Evidence is mandatory and never invented.** The marketplace requires at least
+one photo; Desktop enforces it at the route schema too, so an unevidenced
+recount never even leaves the machine (asserted by a test that checks no
+request reached the marketplace). Desktop has no camera and does not pretend
+otherwise: the URLs are either evidence an operator supplied or evidence
+already attached to the order upstream.
+
+**Stage gating is reported as a precondition, not a failure.** The marketplace
+only accepts a recount between "received at the store" and the start of
+washing. That refusal now surfaces as **409** with the marketplace's own
+`remoteCode` plus a plain-language `hint`. Desktop can also move the order's
+stage outward (`RECEIVED_AT_VENDOR` → `WASHING`/`DRYING`/`IRONING` → `PACKED`,
+with the dispatch slot only on `PACKED`), which is what makes the
+customer-visible progress change.
+
+A latent routing bug was caught by the test here: the new `INVALID_STAGE`
+mapping sat *after* the generic `CloudClientError → 400` return and was
+unreachable, so a stage refusal came back as a flat 400 with no reason. Moved
+ahead of the fallthrough.
+
+**Live-verified end to end** against the real backend and seeded vendor, with a
+real order carrying a real `order_lines` row: a recount before receipt returned
+409 with the hint; marking received moved the real order to
+`RECEIVED_AT_VENDOR`; an unevidenced recount was rejected before any request
+left; and the real recount (3 hoodies counted as 5, plus 2kg of wash-and-fold
+found in the bag) came back with the backend's own figures — ₹300.00 →
+₹632.00 — and set the order to `RECONCILIATION_PENDING`. Reading back
+afterwards: the original request was byte-identical (`immutable: true`, still
+3 shirts at ₹300.00), the intake row held the count and the evidence, the
+reassessment sat at `PendingApproval`, and the marketplace's own copy of the
+order still showed `confirmed_quantity: null` — it stages the proposal without
+applying it, exactly as its own documentation claims.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple
   vendors/roles connects with whatever default scope `verify-otp` grants.
   Real, scoped follow-up work, not a silent gap.
-- **Orders only, and only accept/reject outbound.** Real vendor orders pull in
-  (§4b) and accept/reject go out (§4c) — but catalogue, availability,
-  capacity/slots and settlement still have no real backend data flowing either
-  direction. The remaining vendor-order mutations the backend exposes
-  (`/processing-stage`, `/reconcile`) are not wired yet, so a Desktop operator
-  advancing production locally does not yet move the customer-visible stage on
-  the marketplace.
+- **Orders only.** Orders now flow both ways (pull, accept/reject, stage,
+  recount) — but catalogue, availability, capacity/slots and settlement still
+  have no real backend data moving in either direction.
+- **Evidence upload is an EXTERNAL_BLOCKER locally.** The marketplace's upload
+  endpoint is Cloudinary-backed (its only "fallback" is signed → unsigned
+  Cloudinary, not a local store), so turning an operator's image file into a
+  photo URL cannot be exercised without real provider credentials. Desktop
+  therefore takes evidence URLs today; wiring a file picker through
+  `POST /uploads/image` is real work that cannot be verified here.
+- **The customer's decision is not read back.** A proposed recount sits at
+  `PendingApproval` locally until the next pull reflects the marketplace's new
+  status; Desktop does not yet subscribe to, or poll for, the customer's
+  accept/reject of a reconciliation.
 - **No scheduled/background sync.** `pullCloudOrders` only runs when
   `/api/marketplace/cloud/sync-orders` is called. Wiring a recurring poll —
   or better, reacting to the backend's already-running Socket.IO transport

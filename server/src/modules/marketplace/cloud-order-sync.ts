@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { store, type MarketplaceOrderProjectionRecord, type MarketplaceOrderState } from '../../kernel/store.js';
 import { audit } from '../../kernel/audit.js';
 import { callConnectedCloudApi, getCloudConnectionStatus } from './cloud-session.js';
+import { createMarketplaceOrderRequest } from './order-truth.js';
 import type { FetchLike } from './cloud-client.js';
 
 /**
@@ -168,6 +169,22 @@ export async function pullCloudOrders(tenant: string, actor: string, fetchImpl?:
       updatedAt: now,
     };
     store.saveMarketplaceOrderProjection(record);
+
+    // Record the customer's ORIGINAL request as its own immutable row the
+    // first time this order is seen. Everything downstream — physical intake,
+    // a reconciliation proposal, the customer's decision — is stored against
+    // it rather than editing it, so what the customer actually asked for
+    // survives no matter how many times the order is later recounted or
+    // repriced. `createMarketplaceOrderRequest` returns the existing row
+    // unchanged on every later sync, so re-pulling can never rewrite it.
+    createMarketplaceOrderRequest(tenant, actor, {
+      externalOrderId: entry.id,
+      channel: 'MARKETPLACE',
+      estimate: record.request,
+      customer: record.customer,
+      requestedAt: typeof entry.created_at === 'string' ? entry.created_at : undefined,
+    });
+
     if (existing) summary.updated += 1; else summary.created += 1;
   }
 
