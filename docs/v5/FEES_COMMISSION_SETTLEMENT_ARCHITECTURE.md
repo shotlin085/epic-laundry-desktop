@@ -99,6 +99,46 @@ correctness question, so it is deliberately left for the repo owner to push
 and deploy on their own timeline, not something this session does
 unilaterally.
 
+## 5a. Correction (2026-09-12): "responds 401" was not the same as "a real vendor can use it"
+
+§4's verification confirmed the routes are genuinely registered and
+auth-guarded (`401`, not `404`) and confirmed the settlement math is correct
+by calling `SettlementService.settleShopForPeriod` **directly** — bypassing
+the HTTP route entirely, so its own `preHandler` guard was never actually
+exercised. Neither check tried the route as an authenticated real vendor
+owner, which is the gap that follow-on work on `shop-garment_rates` (same
+session, next slice) surfaced: `shop-financials.routes.js`'s guard checks
+`shopRole === 'SHOP_ADMIN' || shopRole === 'SHOP_MANAGER'` — a role
+vocabulary that **no real account can ever hold**. `vendor_employees.role`
+has a live DB `CHECK` constraint permitting only `VENDOR_OWNER`,
+`VENDOR_STAFF`, `VENDOR_RIDER` (confirmed directly against Postgres), and
+the login/refresh-token flow only ever populates the JWT's `shopRole` claim
+from that column. Confirmed live: the real seeded vendor owner
+(`shopRole: VENDOR_OWNER`) gets `403 FORBIDDEN — Shop Admin, Shop Manager,
+or Super Admin access required` from `GET /api/v1/shop-financials/`; a
+token crafted with `shopRole: 'SHOP_ADMIN'` (matching what the module's own
+guard expects, and what its route-level JSDoc describes) gets through.
+
+**`shop-transactions` does not have this problem** — its guard
+(`shop-transactions.routes.js:38-40`) checks
+`shopRole === 'VENDOR_OWNER' || shopRole === 'VENDOR_STAFF'`, the real
+vocabulary, and was confirmed live in this same follow-up pass: the real
+vendor owner gets a real `200` with a real (empty, since none exist yet)
+transaction list.
+
+**Net effect on this document's "FIXED" claim**: the settlement/payout
+*computation and worker pipeline* is genuinely fixed and correct — that part
+of §4's verification stands. What is NOT yet true is "a vendor can log into
+anything and see their own settlement/payout data through
+`/api/v1/shop-financials`" — no account can, today, regardless of this
+fix, because of this separate, pre-existing role-vocabulary gap. This is
+not something to patch by guessing (e.g., loosening the guard to accept
+`VENDOR_OWNER` too) — see
+`docs/v5/CROSS_REPOSITORY_CAPABILITY_MATRIX.md` §5 for the full write-up
+of why this spans more than one module and needs a deliberate decision
+about which role vocabulary the multi-vendor permission layer actually
+uses, not a one-file fix.
+
 ## 6. A related, smaller design note — commission effective-dating
 
 Mandate §50 asks for immutable per-order policy snapshots so historical orders

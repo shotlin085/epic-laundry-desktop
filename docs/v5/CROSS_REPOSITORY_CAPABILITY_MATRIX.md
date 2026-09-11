@@ -284,6 +284,101 @@ confirmed by running the full backend test suite with and without the fix
 Committed locally (`Lndry_backend` commit `1d55396`), **not pushed** — per
 standing instruction, no remote writes without explicit authorization.
 
+### 5a. `shop-garment_rates` mounted (2026-09-12) — same never-registered pattern, plus a real schema-drift bug this time
+
+Continuing the same audit into catalogue/pricing/availability/capacity:
+`shop-garment_rates` (vendor_services CRUD — list/get/create/update/delete,
+adjust-stock, bulk-price-update, HQ approve/reject) was, like
+`shop-financials`, fully built (~3,400 lines across repository/service/
+controller/routes) but never registered in `app.js` since the initial
+commit. Unlike `shop-financials`, this one was *also* genuinely broken, not
+just disconnected: its repository still joined the pre-migration-062 table
+names.
+
+- `shop-garment_rates.repository.js`: 4 queries (`findMany` list + count,
+  `findProductMetaById`, the stock-movements list) joined
+  `garment_rates`/`categories` — renamed to `garment_types`/
+  `service_categories` by migration 062, per the *other* prior partial fix
+  (`Lndry_backend@67deee3`) which explicitly skipped this file because the
+  module was unreachable at the time ("left as dead code rather than
+  guessing at a fix for an unreachable path" — same principle applied here,
+  now that the path is being made reachable). Also dropped one
+  `p.thumbnail_url` reference (column doesn't exist post-migration; that
+  commit's sibling fix elsewhere already established the `images->>0`
+  replacement pattern).
+- `manual-create.service.js`'s master-catalog `INSERT INTO garment_rates`
+  was deeper than a rename: it wrote `description`/`price`/`sale_price` into
+  columns that don't exist on `garment_types` at all — migration 062 also
+  split pricing out to the per-vendor `vendor_services` row (inserted
+  correctly, separately, three lines later in the same function). Fixed by
+  dropping those three columns from the master-catalog insert; `description`
+  stays accepted on the request body (unchanged contract) but has nowhere to
+  persist today — not silently faked.
+- All 3 fixes confirmed two ways: (a) ran the corrected SQL directly against
+  the real local Postgres — the list query now returns the real seeded
+  vendor's real priced services (13 real rows: "Small Carpet" ₹450, "Normal
+  Curtain" ₹300, etc.) instead of erroring; (b) the module's own pre-existing
+  test suite (108 unit + 11 "integration" tests, all mock-based) — 108
+  already passed (they mock the DB, so never caught the stale names), the
+  11 `manual-product-create.test.js` tests initially failed against the fix
+  because the mock's own SQL-matching regexes were written against the same
+  stale table names (a second instance of "the test encodes the bug" this
+  session already hit with the cloud connector's refresh-token test) — fixed
+  the mock's matchers to expect `garment_types`, all 11 now pass. One
+  property-based test (`soft-delete-preservation.property.test.js`) had the
+  identical issue in its fake-pg SQL matcher; fixed the same way. Full
+  backend suite re-run: zero new failures (same 3 pre-existing, unrelated
+  failures as the `git stash` baseline — `lndry-endpoints.test.js` ×2,
+  `vendor-employees.service.spec.js` ×1).
+
+**A second, larger blocker this surfaced — not fixed, and not guessable:**
+even correctly mounted, `shop-garment_rates`' route guards (`canRead`/
+`canWrite` in `shop-garment_rates.routes.js`) check
+`shopRole ∈ {SHOP_ADMIN, SHOP_MANAGER, SHOP_STAFF, SHOP_VIEWER}` — a role
+vocabulary that turns out to not exist anywhere in the live system.
+`vendor_employees.role` carries a live Postgres `CHECK` constraint
+permitting only `VENDOR_OWNER` / `VENDOR_STAFF` / `VENDOR_RIDER`, and the
+real login/refresh-token flow only ever populates the JWT's `shopRole` claim
+from that column — so `SHOP_ADMIN` etc. can never appear on a real token.
+Confirmed live: the real seeded vendor owner (`shopRole: VENDOR_OWNER`) gets
+`403 FORBIDDEN` from every `shop-garment_rates` route; a token crafted with
+`shopRole: SHOP_ADMIN` (matching what the guard and the module's own
+integration tests both expect via `signTestToken`) passes and returns real
+data, proving the SQL/route-logic fix is otherwise complete and correct.
+
+**This is the same blocker `shop-financials` has** (see the correction added
+to `docs/v5/FEES_COMMISSION_SETTLEMENT_ARCHITECTURE.md` §5a) — its guard
+also checks `SHOP_ADMIN | SHOP_MANAGER`. **`shop-transactions` does not**
+(`VENDOR_OWNER | VENDOR_STAFF` — the real vocabulary — confirmed live with a
+real `200`). So of the three "Shop *" modules mounted across this session,
+one works for real accounts today (`shop-transactions`), two do not
+(`shop-financials`, `shop-garment_rates`) — not because anything is broken,
+but because an entire `SHOP_ADMIN`/`SHOP_MANAGER`/`SHOP_STAFF`/`SHOP_VIEWER`
++ `CANONICAL_PERMISSIONS` authorization layer (referenced throughout these
+modules' comments as "design §4.1/§4.5", "R16-R23") was designed and coded
+against, but never actually activated — the real system that shipped uses
+the simpler 3-role `VENDOR_OWNER`/`VENDOR_STAFF`/`VENDOR_RIDER` vocabulary
+with (for the one real seeded account checked) an empty `permissions` JSONB
+array.
+
+Resolving this for real needs one of two deliberate, mutually-exclusive
+product/architecture decisions this session does not have standing to make
+unilaterally: (a) actually activate the `SHOP_*` role system — extend the
+`vendor_employees.role` CHECK constraint, decide who assigns these roles and
+how, and backfill/seed real accounts with them; or (b) rewrite the
+`shop-financials`/`shop-garment_rates` guards to check the real
+`VENDOR_OWNER`/`VENDOR_STAFF`/`VENDOR_RIDER` vocabulary instead, the way
+`shop-transactions` already correctly does (the smaller, more surgical
+option, but changes who these modules consider "Shop Manager"-equivalent —
+a real access-control decision, not a mechanical rename). Routes are left
+mounted (they fail safely closed — `403`, never a crash or a bypass — for
+every real account today, exactly like the HQ approve/reject routes already
+mounted behind `MULTI_VENDOR_PRODUCT_APPROVAL=false`), correct, tested, and
+ready for whichever direction is chosen.
+
+Committed locally (`Lndry_backend`, uncommitted as of this writing — commit
+pending alongside this doc update), **not pushed**.
+
 ## 6. Incidental finding worth separate handling
 
 `webapp/src/lib/nav.ts` in Desktop defines an entirely different, generic-ERP

@@ -587,16 +587,17 @@ trigger.
   carries no reconciliation record, so nothing resolves on its own until
   someone looks. With no background poll yet (above), a decided recount stays
   locally pending until it is next opened.
-- **No Evidence Center UI yet.** The full cross-context evidence history is
-  now readable and persisted (§4g), but no Desktop screen renders it — an
-  operator can only see it via the API today.
 - **No scheduled/background sync.** `pullCloudOrders` only runs when
   `/api/marketplace/cloud/sync-orders` is called. Wiring a recurring poll —
   or better, reacting to the backend's already-running Socket.IO transport
   instead of polling — is separate, scoped follow-up work. Until then a new
-  marketplace order does not appear in Desktop on its own.
-- **UI covers connect + pull + accept/reject only** (§4d). Reconciliation,
-  pickup/delivery and settlement surfaces are untouched by this work.
+  marketplace order does not appear in Desktop on its own, and (per §4h) a
+  decided recount or an in-flight rider/delivery status change stays as last
+  synced until the operator re-opens that order.
+- **UI covers connect + pull + accept/reject + stage progress + reconciliation
+  + evidence only** (§4d, §4h). Pickup/delivery *assignment* (rider-side,
+  not vendor-side — §4h confirmed the vendor's own actionable surface stops
+  at `PACKED`) and settlement surfaces are untouched by this work.
 - Does not touch `edge-sync.ts`'s outbox/inbox at all. That machinery remains
   real, tested, and local-only until a decision is made about whether the
   backend should grow a matching sync protocol (a large, separate proposal)
