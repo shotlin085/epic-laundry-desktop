@@ -1,0 +1,186 @@
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { store, type MarketplaceCloudSessionRecord } from '../../kernel/store.js';
+import * as cloudClient from './cloud-client.js';
+import type { FetchLike, CloudTokens } from './cloud-client.js';
+
+/**
+ * Connects Epic Desktop to a real LNDRY Cloud Backend vendor account.
+ *
+ * This is deliberately NOT wired into the edge-sync outbox/inbox machinery —
+ * see cloud-client.ts's header comment for why. It is a standalone "connect
+ * this store to its real marketplace account" capability: the connector
+ * foundation the rest of the marketplace convergence work builds on, not the
+ * full durable-sync layer itself.
+ *
+ * Cloud identity is kept separate from local operator identity (mandate's
+ * cross-system identity principle): a store's local operators authenticate
+ * locally regardless of whether the store has a connected cloud session, and
+ * a connected cloud session's tokens are never exposed to the renderer — only
+ * a redacted status summary is.
+ */
+
+export type CloudConnectionStatus = {
+  configured: boolean;
+  connected: boolean;
+  remoteVendorName?: string;
+  phone?: string;
+  connectedAt?: string;
+};
+
+function cloudApiBaseUrl(): string | undefined {
+  const value = String(process.env.EPIC_MARKETPLACE_CLOUD_API_URL || '').trim();
+  return value || undefined;
+}
+
+export function isCloudConfigured(): boolean {
+  return Boolean(cloudApiBaseUrl());
+}
+
+function requireConfigured(): string {
+  const baseUrl = cloudApiBaseUrl();
+  if (!baseUrl) throw new Error('CLOUD_NOT_CONFIGURED');
+  return baseUrl;
+}
+
+// ─── At-rest token protection ──────────────────────────────────────────────
+// Desktop's server process cannot call Electron's `safeStorage` (that API only
+// exists in the Electron main process, which runs this server as a separate
+// child process — see desktop/main.js's own use of safeStorage for the backup
+// passphrase). Until that IPC bridge is built, tokens are encrypted at rest
+// with a locally-generated machine key file (AES-256-GCM, same primitive as
+// backup-crypto.ts), which is materially better than plaintext in SQLite but
+// is a deliberately-flagged interim step: migrating this to Electron
+// safeStorage via IPC is the natural hardening follow-up once the renderer
+// round-trip exists to request it.
+function machineKeyFile(): string {
+  const dbFile = process.env.EPIC_DB_FILE || join(homedir(), '.epic-laundry', 'epic.sqlite');
+  return join(dirname(dbFile), 'cloud-connector.key');
+}
+
+function machineKey(): Buffer {
+  const file = machineKeyFile();
+  if (existsSync(file)) return Buffer.from(readFileSync(file, 'utf8').trim(), 'base64');
+  const key = randomBytes(32);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, key.toString('base64'), { mode: 0o600 });
+  return key;
+}
+
+function encryptTokens(tokens: CloudTokens): string {
+  const key = machineKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(tokens), 'utf8')), cipher.final()]);
+  return JSON.stringify({ iv: iv.toString('base64url'), tag: cipher.getAuthTag().toString('base64url'), ciphertext: ciphertext.toString('base64url') });
+}
+
+function decryptTokens(encryptedJson: string): CloudTokens {
+  const envelope = JSON.parse(encryptedJson) as { iv: string; tag: string; ciphertext: string };
+  const key = machineKey();
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64url'));
+  decipher.setAuthTag(Buffer.from(envelope.tag, 'base64url'));
+  const plaintext = Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, 'base64url')), decipher.final()]);
+  return JSON.parse(plaintext.toString('utf8')) as CloudTokens;
+}
+
+function defaultFetch(): FetchLike {
+  return (globalThis as { fetch: FetchLike }).fetch;
+}
+
+export async function requestCloudOtp(phone: string, fetchImpl: FetchLike = defaultFetch()): Promise<{ sent: true }> {
+  const baseUrl = requireConfigured();
+  await cloudClient.sendOtp(fetchImpl, baseUrl, phone);
+  return { sent: true };
+}
+
+/**
+ * Verifies the OTP, fetches the account's own session profile, and persists
+ * the token pair (encrypted at rest) plus a redacted connection record.
+ *
+ * Deliberately does not yet call `select-shop`/`select-role` — multi-shop
+ * account selection is a real, separate backend capability this connector
+ * does not exercise yet. An account linked to more than one shop connects
+ * using whatever default scope `verify-otp` grants; narrowing that is a
+ * documented next step, not something silently papered over here.
+ */
+export async function connectCloudSession(
+  tenant: string,
+  actor: string,
+  input: { phone: string; otp: string },
+  fetchImpl: FetchLike = defaultFetch(),
+): Promise<CloudConnectionStatus> {
+  const baseUrl = requireConfigured();
+  const phone = String(input.phone || '').trim();
+  const otp = String(input.otp || '').trim();
+  if (!phone || !otp) throw new Error('CLOUD_CONNECT_INPUT_REQUIRED');
+
+  const tokens = await cloudClient.verifyOtp(fetchImpl, baseUrl, phone, otp);
+  const profile = await cloudClient.getSession(fetchImpl, baseUrl, tokens.accessToken);
+
+  const now = new Date().toISOString();
+  const record: MarketplaceCloudSessionRecord = {
+    tenant,
+    storeId: '',
+    status: 'Connected',
+    remoteVendorId: profile.userId,
+    remoteVendorName: profile.name,
+    phone: profile.phone || phone,
+    encryptedTokensJson: encryptTokens(tokens),
+    tokenExpiresAt: tokens.accessTokenExpiresAt,
+    connectedAt: now,
+    connectedBy: actor,
+    updatedAt: now,
+  };
+  store.saveMarketplaceCloudSession(record);
+  return getCloudConnectionStatus(tenant);
+}
+
+export function getCloudConnectionStatus(tenant: string): CloudConnectionStatus {
+  const configured = isCloudConfigured();
+  const session = store.getMarketplaceCloudSession(tenant);
+  if (!session || session.status !== 'Connected') return { configured, connected: false };
+  return {
+    configured,
+    connected: true,
+    remoteVendorName: session.remoteVendorName,
+    phone: session.phone,
+    connectedAt: session.connectedAt,
+  };
+}
+
+export async function disconnectCloudSession(tenant: string, fetchImpl: FetchLike = defaultFetch()): Promise<CloudConnectionStatus> {
+  const session = store.getMarketplaceCloudSession(tenant);
+  const baseUrl = cloudApiBaseUrl();
+  if (session && session.status === 'Connected' && baseUrl) {
+    try {
+      const tokens = decryptTokens(session.encryptedTokensJson);
+      await cloudClient.logout(fetchImpl, baseUrl, tokens.accessToken);
+    } catch {
+      // Best-effort: a failed remote logout must not block the local disconnect —
+      // the whole point of disconnect is that this installation no longer wants
+      // to hold the credential, regardless of whether the cloud side acknowledges it.
+    }
+  }
+  store.deleteMarketplaceCloudSession(tenant);
+  return getCloudConnectionStatus(tenant);
+}
+
+/**
+ * Fetches one real piece of connected-vendor data from the real backend,
+ * using the stored session (refreshing the access token once if needed). This
+ * is the actual proof that the connector works end to end, not just that
+ * auth succeeds — exported for the settings UI and for tests, not just as an
+ * internal helper.
+ */
+export async function fetchConnectedVendorProfile(tenant: string, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  const baseUrl = requireConfigured();
+  const session = store.getMarketplaceCloudSession(tenant);
+  if (!session || session.status !== 'Connected') throw new Error('CLOUD_NOT_CONNECTED');
+  const tokens = decryptTokens(session.encryptedTokensJson);
+  return cloudClient.authenticatedGet(fetchImpl, baseUrl, '/vendor/profile', tokens, (refreshed) => {
+    store.saveMarketplaceCloudSession({ ...session, encryptedTokensJson: encryptTokens(refreshed), tokenExpiresAt: refreshed.accessTokenExpiresAt, updatedAt: new Date().toISOString() });
+  });
+}

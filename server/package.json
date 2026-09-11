@@ -18,6 +18,7 @@
     "test:marketplace-api": "tsx src/_selftest-marketplace-api.ts",
     "test:marketplace-device-api": "tsx src/_selftest-marketplace-device-api.ts",
     "test:marketplace-catalogue": "tsx src/_selftest-marketplace-catalogue.ts",
+    "test:marketplace-cloud-client": "tsx src/_selftest-marketplace-cloud-client.ts",
     "test:marketplace-customer-links": "tsx src/_selftest-marketplace-customer-links.ts",
     "test:marketplace-order-truth": "tsx src/_selftest-marketplace-order-truth.ts",
     "test:marketplace-customer-status": "tsx src/_selftest-marketplace-customer-status.ts",

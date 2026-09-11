@@ -93,6 +93,8 @@ import { recordProviderPaymentEvent, verifyProviderWebhook, type ProviderPayment
 import { queueMarketplaceNotification, recordMarketplaceNotificationDelivery, type NotificationChannel, type NotificationState } from './modules/marketplace/notifications.js';
 import { customerFacingOrderStatus, customerStatusMapping, saveCustomerStatusMapping } from './modules/marketplace/customer-status.js';
 import { completeMarketplacePickup, marketplacePickupTask, scheduleMarketplacePickup } from './modules/marketplace/pickup.js';
+import { connectCloudSession, disconnectCloudSession, fetchConnectedVendorProfile, getCloudConnectionStatus, requestCloudOtp } from './modules/marketplace/cloud-session.js';
+import { CloudClientError } from './modules/marketplace/cloud-client.js';
 import { renderCanonicalTaxInvoice } from './modules/gst/canonical-invoice-print.js';
 import { approveTaxPolicyRule, createTaxPolicyRule, listTaxPolicyRules, retireTaxPolicyRule, saveSupplierTaxProfile, supplierTaxProfile, taxReadiness } from './modules/gst/tax-policy.js';
 import { auditGarmentAssets } from './modules/laundry/garment-assets.js';
@@ -415,6 +417,22 @@ export function registerApi(app: FastifyInstance) {
     if (error instanceof TagRetiredError) return rep.code(409).send({ code: error.code, error: error.message, details: error.details });
     if (error instanceof LaundryDomainError) return rep.code(error.code === 'TAG_RETIRED' ? 409 : 400).send({ code: error.code, error: error.message, details: error.details });
     return rep.code(400).send({ error: error instanceof Error ? error.message : String(error || 'laundry operation failed') });
+  };
+  const cloudErrorStatus = (error: unknown) => {
+    if (error instanceof CloudClientError) {
+      if (error.code === 'CLOUD_AUTH_FAILED') return 401;
+      if (error.code === 'CLOUD_NOT_CONFIGURED') return 409;
+      if (error.code === 'CLOUD_TIMEOUT' || error.code === 'CLOUD_UNREACHABLE') return 502;
+      return 400;
+    }
+    if (error instanceof Error && (error.message === 'CLOUD_NOT_CONFIGURED' || error.message === 'CLOUD_NOT_CONNECTED')) return 409;
+    if (error instanceof Error && error.message === 'CLOUD_CONNECT_INPUT_REQUIRED') return 400;
+    return 400;
+  };
+  const cloudErrorBody = (error: unknown) => {
+    const code = error instanceof CloudClientError ? error.code : (error instanceof Error ? error.message : 'CLOUD_ERROR');
+    const message = error instanceof Error ? error.message : String(error || 'Cloud connector operation failed');
+    return { code, error: message };
   };
 
   app.get('/api/auth/bootstrap-status', async () => ({ needsBootstrap: store.authIdentityCount() === 0 }));
@@ -743,6 +761,35 @@ export function registerApi(app: FastifyInstance) {
         return result;
       });
     } catch (error: any) { return rep.code(error.message === 'MARKETPLACE_DEVICE_NOT_FOUND' ? 404 : 400).send({ code: error.message, error: error.message }); }
+  });
+  // Cloud connector — connects this store to a real LNDRY Cloud Backend
+  // vendor account (phone+OTP, the same flow Vendor App uses). Separate from
+  // the marketplace device/outbox-inbox concepts above, which have no
+  // matching protocol on the real backend today — see cloud-client.ts.
+  app.post('/api/marketplace/cloud/otp', { preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await requestCloudOtp(String((req.body as any)?.phone || '')); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/marketplace/cloud/connect', { preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try {
+      const result = await connectCloudSession(req.auth!.tenant, req.auth!.actor, req.body as any);
+      audit(req.auth!.tenant, req.auth!.actor, 'marketplace:cloud-connected', { entity: 'marketplace_cloud_session', row_id: req.auth!.tenant, after: { remoteVendorName: result.remoteVendorName } });
+      return result;
+    } catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.get('/api/marketplace/cloud/status', { preHandler: [guard, allow('orders.read')] }, async (req: any) =>
+    getCloudConnectionStatus(req.auth!.tenant),
+  );
+  app.post('/api/marketplace/cloud/disconnect', { preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try {
+      const result = await disconnectCloudSession(req.auth!.tenant);
+      audit(req.auth!.tenant, req.auth!.actor, 'marketplace:cloud-disconnected', { entity: 'marketplace_cloud_session', row_id: req.auth!.tenant });
+      return result;
+    } catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.get('/api/marketplace/cloud/vendor-profile', { preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await fetchConnectedVendorProfile(req.auth!.tenant); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   app.get('/api/marketplace/catalogue/mappings', { schema: { querystring: marketplaceCatalogueQuery }, preHandler: [guard, allow('catalogue.read')] }, async (req: any) =>
     inStore(req, () => listMarketplaceCatalogueMappings(req.auth!.tenant, { vendorId: req.query?.vendorId, visibleOnly: req.query?.visibleOnly === true })),

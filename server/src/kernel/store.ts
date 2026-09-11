@@ -266,6 +266,12 @@ export type MarketplaceDeviceRecord = {
   publicKey: string; credentialRef: string; capabilities: Record<string, boolean>; softwareVersion: string;
   activatedAt?: string; lastSeenAt?: string; revokedAt?: string; rotationRequired: boolean; createdAt: string; updatedAt: string;
 };
+export type MarketplaceCloudSessionStatus = 'Disconnected' | 'Connected';
+export type MarketplaceCloudSessionRecord = {
+  tenant: string; storeId: string; status: MarketplaceCloudSessionStatus;
+  remoteVendorId: string; remoteVendorName: string; phone: string;
+  encryptedTokensJson: string; tokenExpiresAt?: string; connectedAt?: string; connectedBy: string; updatedAt: string;
+};
 export type MarketplaceAvailabilityState = 'Open' | 'Closed' | 'Paused';
 export type MarketplaceAvailabilityRecord = {
   tenant: string; storeId: string; state: MarketplaceAvailabilityState; timezone: string;
@@ -611,6 +617,7 @@ export class Store {
       { version: 34, name: 'laundry-order-search-invoice-names', sql: "DELETE FROM laundry_order_search_map; DELETE FROM laundry_order_search_fts; INSERT INTO laundry_order_search_fts(tenant, store_id, order_id, order_ref, order_name, invoice, customer_name, customer_phone) SELECT r.tenant, r.store_id, r.id, r.id, COALESCE(json_extract(r.data_json, '$.name'), ''), trim(COALESCE(json_extract(r.data_json, '$.invoice'), '') || ' ' || COALESCE(json_extract(i.data_json, '$.name'), '')), COALESCE(json_extract(p.data_json, '$.name'), ''), COALESCE(json_extract(p.data_json, '$.phone'), '') FROM entity_rows r LEFT JOIN entity_rows p ON p.tenant = r.tenant AND p.store_id = r.store_id AND p.entity = 'party' AND p.id = json_extract(r.data_json, '$.customer') LEFT JOIN entity_rows i ON i.tenant = r.tenant AND i.store_id = r.store_id AND i.entity = 'sales_invoice' AND i.id = json_extract(r.data_json, '$.invoice') WHERE r.entity = 'laundry_order'; INSERT OR IGNORE INTO laundry_order_search_map(fts_rowid, tenant, store_id, order_id) SELECT rowid, tenant, store_id, order_id FROM laundry_order_search_fts;" },
       { version: 35, name: 'marketplace-catalogue-mappings', sql: "CREATE TABLE marketplace_catalogue_mappings (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, store_id TEXT NOT NULL, vendor_id TEXT NOT NULL, garment_id TEXT NOT NULL, service_id TEXT NOT NULL, marketplace_category_id TEXT NOT NULL, marketplace_service_id TEXT NOT NULL, public_name TEXT NOT NULL, public_description TEXT NOT NULL DEFAULT '', price_paise INTEGER NOT NULL CHECK(price_paise >= 0), pricing_unit TEXT NOT NULL CHECK(pricing_unit IN ('Piece','Kilogram','Pair','Square Foot')), min_quantity_milli INTEGER NOT NULL CHECK(min_quantity_milli > 0), turnaround_minutes INTEGER NOT NULL CHECK(turnaround_minutes >= 0), express_eligible INTEGER NOT NULL DEFAULT 0 CHECK(express_eligible IN (0,1)), marketplace_visible INTEGER NOT NULL DEFAULT 0 CHECK(marketplace_visible IN (0,1)), version INTEGER NOT NULL CHECK(version > 0), effective_from TEXT NOT NULL, effective_until TEXT, approval_status TEXT NOT NULL CHECK(approval_status IN ('Draft','PendingReview','Approved','Rejected','Retired')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, UNIQUE(tenant,store_id,vendor_id,garment_id,service_id,effective_from)); CREATE INDEX marketplace_catalogue_scope_visibility ON marketplace_catalogue_mappings(tenant,store_id,marketplace_visible,approval_status,effective_from); CREATE INDEX marketplace_catalogue_scope_vendor ON marketplace_catalogue_mappings(tenant,store_id,vendor_id,updated_at DESC);" },
       { version: 36, name: 'explicit-marketplace-customer-links', sql: "CREATE TABLE marketplace_customer_links (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, store_id TEXT NOT NULL, customer_id TEXT NOT NULL, channel TEXT NOT NULL CHECK(channel IN ('COUNTER','CUSTOMER_APP','WEBSITE','VENDOR_APP','MARKETPLACE','ADMIN','IMPORT')), external_customer_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('Active','Revoked')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, UNIQUE(tenant,store_id,channel,external_customer_id), UNIQUE(tenant,store_id,id)); CREATE INDEX marketplace_customer_links_customer ON marketplace_customer_links(tenant,store_id,customer_id,status,updated_at DESC);" },
+      { version: 37, name: 'marketplace-cloud-session', sql: "CREATE TABLE marketplace_cloud_sessions (tenant TEXT NOT NULL, store_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('Disconnected','Connected')), remote_vendor_id TEXT NOT NULL DEFAULT '', remote_vendor_name TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', encrypted_tokens_json TEXT NOT NULL DEFAULT '', token_expires_at TEXT, connected_at TEXT, connected_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(tenant,store_id));" },
     ];
     this.db.transaction(() => {
       for (const migration of migrations) {
@@ -1047,6 +1054,23 @@ export class Store {
     const row = this.db.prepare('SELECT * FROM marketplace_devices WHERE tenant = ? AND store_id = ?').get(tenant, this.currentStore(tenant)) as Record<string, unknown> | undefined;
     return row ? this.marketplaceDeviceFromRow(row) : undefined;
   }
+  private marketplaceCloudSessionFromRow(row: Record<string, unknown>): MarketplaceCloudSessionRecord {
+    return { tenant: String(row.tenant), storeId: String(row.store_id), status: String(row.status) as MarketplaceCloudSessionStatus, remoteVendorId: String(row.remote_vendor_id || ''), remoteVendorName: String(row.remote_vendor_name || ''), phone: String(row.phone || ''), encryptedTokensJson: String(row.encrypted_tokens_json || ''), tokenExpiresAt: row.token_expires_at ? String(row.token_expires_at) : undefined, connectedAt: row.connected_at ? String(row.connected_at) : undefined, connectedBy: String(row.connected_by || ''), updatedAt: String(row.updated_at) };
+  }
+  saveMarketplaceCloudSession(input: MarketplaceCloudSessionRecord) {
+    const storeId = input.storeId || this.currentStore(input.tenant);
+    this.db.prepare(`INSERT INTO marketplace_cloud_sessions(tenant,store_id,status,remote_vendor_id,remote_vendor_name,phone,encrypted_tokens_json,token_expires_at,connected_at,connected_by,updated_at)
+      VALUES (@tenant,@storeId,@status,@remoteVendorId,@remoteVendorName,@phone,@encryptedTokensJson,@tokenExpiresAt,@connectedAt,@connectedBy,@updatedAt)
+      ON CONFLICT(tenant,store_id) DO UPDATE SET status=excluded.status,remote_vendor_id=excluded.remote_vendor_id,remote_vendor_name=excluded.remote_vendor_name,phone=excluded.phone,encrypted_tokens_json=excluded.encrypted_tokens_json,token_expires_at=excluded.token_expires_at,connected_at=excluded.connected_at,connected_by=excluded.connected_by,updated_at=excluded.updated_at`).run({ ...input, storeId, remoteVendorId: input.remoteVendorId || '', remoteVendorName: input.remoteVendorName || '', phone: input.phone || '', encryptedTokensJson: input.encryptedTokensJson || '', tokenExpiresAt: input.tokenExpiresAt || null, connectedAt: input.connectedAt || null, connectedBy: input.connectedBy || '' });
+    return this.getMarketplaceCloudSession(input.tenant)!;
+  }
+  getMarketplaceCloudSession(tenant: string) {
+    const row = this.db.prepare('SELECT * FROM marketplace_cloud_sessions WHERE tenant = ? AND store_id = ?').get(tenant, this.currentStore(tenant)) as Record<string, unknown> | undefined;
+    return row ? this.marketplaceCloudSessionFromRow(row) : undefined;
+  }
+  deleteMarketplaceCloudSession(tenant: string) {
+    this.db.prepare('DELETE FROM marketplace_cloud_sessions WHERE tenant = ? AND store_id = ?').run(tenant, this.currentStore(tenant));
+  }
   private marketplaceAvailabilityFromRow(row: Record<string, unknown>): MarketplaceAvailabilityRecord {
     return { tenant: String(row.tenant), storeId: String(row.store_id), state: String(row.state) as MarketplaceAvailabilityState, timezone: String(row.timezone), businessHours: decode<MarketplaceAvailabilityRecord['businessHours']>(String(row.business_hours_json)), holidays: decode<string[]>(String(row.holidays_json)), serviceZones: decode<string[]>(String(row.service_zones_json)), capabilities: decode<Record<string, boolean>>(String(row.capabilities_json)), capacity: decode<MarketplaceAvailabilityRecord['capacity']>(String(row.capacity_json)), leadTimeMinutes: Number(row.lead_time_minutes), staleAfterMinutes: Number(row.stale_after_minutes), updatedAt: String(row.updated_at), updatedBy: String(row.updated_by) };
   }
@@ -1310,7 +1334,7 @@ export class Store {
     });
   }
   replaceAll(input: DbShape) {
-    this.db.exec('DELETE FROM entity_rows; DELETE FROM laundry_order_search_map; DELETE FROM laundry_order_search_fts; DELETE FROM records; DELETE FROM sequences; DELETE FROM garment_unit_events; DELETE FROM tag_reprints; DELETE FROM tag_history; DELETE FROM tag_print_jobs; DELETE FROM laundry_container_events; DELETE FROM laundry_containers; DELETE FROM garment_units; DELETE FROM financial_entries; DELETE FROM financial_documents; DELETE FROM customer_ledger_entries; DELETE FROM wallet_entries; DELETE FROM customer_addresses; DELETE FROM laundry_order_holds; DELETE FROM cash_shift_closes; DELETE FROM financial_normalization_runs; DELETE FROM laundry_order_items; DELETE FROM laundry_orders; DELETE FROM customers; DELETE FROM compatibility_migration_runs; DELETE FROM idempotency_commands; DELETE FROM sync_outbox; DELETE FROM sync_inbox; DELETE FROM sync_checkpoints; DELETE FROM order_external_links; DELETE FROM marketplace_customer_links; DELETE FROM marketplace_order_projections; DELETE FROM marketplace_devices; DELETE FROM marketplace_catalogue_mappings;');
+    this.db.exec('DELETE FROM entity_rows; DELETE FROM laundry_order_search_map; DELETE FROM laundry_order_search_fts; DELETE FROM records; DELETE FROM sequences; DELETE FROM garment_unit_events; DELETE FROM tag_reprints; DELETE FROM tag_history; DELETE FROM tag_print_jobs; DELETE FROM laundry_container_events; DELETE FROM laundry_containers; DELETE FROM garment_units; DELETE FROM financial_entries; DELETE FROM financial_documents; DELETE FROM customer_ledger_entries; DELETE FROM wallet_entries; DELETE FROM customer_addresses; DELETE FROM laundry_order_holds; DELETE FROM cash_shift_closes; DELETE FROM financial_normalization_runs; DELETE FROM laundry_order_items; DELETE FROM laundry_orders; DELETE FROM customers; DELETE FROM compatibility_migration_runs; DELETE FROM idempotency_commands; DELETE FROM sync_outbox; DELETE FROM sync_inbox; DELETE FROM sync_checkpoints; DELETE FROM order_external_links; DELETE FROM marketplace_customer_links; DELETE FROM marketplace_order_projections; DELETE FROM marketplace_devices; DELETE FROM marketplace_catalogue_mappings; DELETE FROM marketplace_cloud_sessions;');
     for (const row of input.rows || []) this.insertRow(row);
     for (const entry of input.gl || []) this.appendGL(entry);
     for (const entry of input.audit || []) this.appendAudit(entry);
@@ -1376,6 +1400,7 @@ export class Store {
       this.db.prepare('DELETE FROM marketplace_customer_links WHERE tenant = ? AND store_id = ?').run(tenant, storeId);
       this.db.prepare('DELETE FROM marketplace_order_projections WHERE tenant = ? AND store_id = ?').run(tenant, storeId);
       this.db.prepare('DELETE FROM marketplace_devices WHERE tenant = ? AND store_id = ?').run(tenant, storeId);
+      this.db.prepare('DELETE FROM marketplace_cloud_sessions WHERE tenant = ? AND store_id = ?').run(tenant, storeId);
       this.db.prepare('DELETE FROM marketplace_catalogue_mappings WHERE tenant = ? AND store_id = ?').run(tenant, storeId);
       this.db.prepare('DELETE FROM idempotency_commands WHERE tenant = ? AND scope LIKE ?').run(tenant, `${storeId}:%`);
       for (const row of input.rows || []) {
