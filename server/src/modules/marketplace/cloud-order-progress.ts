@@ -3,7 +3,7 @@ import { audit } from '../../kernel/audit.js';
 import { CloudClientError } from './cloud-client.js';
 import { callConnectedCloudApi, getCloudConnectionStatus, postConnectedCloudApi } from './cloud-session.js';
 import { mapRemoteOrderStatus } from './cloud-order-sync.js';
-import { createMarketplaceReassessment, recordMarketplaceIntake } from './order-truth.js';
+import { createMarketplaceReassessment, decideMarketplaceReassessment, recordMarketplaceIntake } from './order-truth.js';
 import type { FetchLike } from './cloud-client.js';
 
 /**
@@ -16,6 +16,15 @@ import type { FetchLike } from './cloud-client.js';
  * what the price should become is a separate reassessment row carrying the
  * backend's own computed amounts. Nothing overwrites what the customer asked
  * for, which is what makes the difference explainable afterwards.
+ *
+ * Evidence, honestly scoped: the backend stores three kinds of order photo
+ * (`order_pickup_photos.context` = RIDER_PICKUP | VENDOR_RECONCILIATION |
+ * DELIVERY_PROOF), but the ONLY read path anywhere in it selects them by
+ * `order_reconciliation_id`. Rider pickup proof and delivery proof are
+ * therefore written and never readable by any client, vendor included. So
+ * reconciliation evidence is surfaced here and the rest cannot be — that is a
+ * backend capability gap, not something Desktop can paper over by displaying a
+ * placeholder.
  */
 
 export type CloudOrderLine = {
@@ -28,6 +37,21 @@ export type CloudOrderLine = {
   confirmedQuantity?: number;
 };
 
+/** The marketplace's own record of a proposed recount and what became of it. */
+export type CloudReconciliationRecord = {
+  id: string;
+  /** PENDING_CUSTOMER | ACCEPTED | REJECTED | APPLIED — the marketplace's own value. */
+  status: string;
+  reason?: string;
+  previousPayableAmountPaise?: number;
+  proposedPayableAmountPaise?: number;
+  customerDecisionAt?: string;
+  /** Evidence attached to THIS reconciliation. See the note in the module header on what is not readable. */
+  photos: string[];
+};
+
+export type CloudTimelineEntry = { at: string; oldStatus?: string; newStatus: string; actorRole?: string; note?: string };
+
 export type CloudOrderDetail = {
   externalOrderId: string;
   remoteStatus: string;
@@ -36,7 +60,17 @@ export type CloudOrderDetail = {
   estimatedAmountPaise?: number;
   payableAmountPaise?: number;
   processingStage?: string;
+  latestReconciliation?: CloudReconciliationRecord;
+  /** The marketplace's own status history for this order — every actor, not just this store's. */
+  timeline: CloudTimelineEntry[];
 };
+
+/**
+ * Recorded as the decider when a customer's answer to a recount is observed.
+ * Deliberately not a local operator id: the decision happened on the
+ * marketplace, and the local audit trail should say so.
+ */
+export const CUSTOMER_DECISION_ACTOR = 'marketplace:customer';
 
 /** The stages the real backend's processing-stage endpoint accepts. */
 export const CLOUD_ORDER_STAGES = ['RECEIVED_AT_VENDOR', 'WASHING', 'DRYING', 'IRONING', 'PACKED'] as const;
@@ -108,7 +142,60 @@ export async function fetchCloudOrderDetail(tenant: string, externalOrderId: str
       estimatedQuantity: num(line.estimated_quantity),
       confirmedQuantity: num(line.confirmed_quantity),
     })).filter((line) => line.orderLineId),
+    latestReconciliation: isRecord(raw.latestReconciliation) ? {
+      id: String(raw.latestReconciliation.id || ''),
+      status: String(raw.latestReconciliation.status || ''),
+      reason: typeof raw.latestReconciliation.reason === 'string' ? raw.latestReconciliation.reason : undefined,
+      previousPayableAmountPaise: num(raw.latestReconciliation.previous_payable_amount_paise),
+      proposedPayableAmountPaise: num(raw.latestReconciliation.proposed_payable_amount_paise),
+      customerDecisionAt: typeof raw.latestReconciliation.customer_decision_at === 'string' ? raw.latestReconciliation.customer_decision_at : undefined,
+      photos: Array.isArray(raw.latestReconciliation.photos) ? raw.latestReconciliation.photos.map((photo) => String(photo)).filter(Boolean) : [],
+    } : undefined,
+    timeline: (Array.isArray(raw.timeline) ? raw.timeline : []).filter(isRecord).map((entry) => ({
+      at: String(entry.timestamp || entry.at || ''),
+      oldStatus: entry.old_status ? String(entry.old_status) : undefined,
+      newStatus: String(entry.new_status || ''),
+      actorRole: entry.actor_role ? String(entry.actor_role) : undefined,
+      note: typeof entry.note === 'string' ? entry.note : undefined,
+    })).filter((entry) => entry.newStatus),
   };
+}
+
+/**
+ * Resolves a locally-pending reassessment using the marketplace's OWN record of
+ * the customer's decision.
+ *
+ * The order's status alone is not used as the signal: an order can move on for
+ * reasons unrelated to a recount, and inferring "the customer must have agreed"
+ * from that would be Desktop inventing a decision. `order_reconciliations.status`
+ * is the marketplace's explicit record of what the customer actually did, so
+ * that — and only that — drives this.
+ */
+function resolveReassessmentFromRemote(tenant: string, actor: string, externalOrderId: string, reconciliation?: CloudReconciliationRecord) {
+  if (!reconciliation) return undefined;
+  const decision = reconciliation.status === 'ACCEPTED' || reconciliation.status === 'APPLIED' ? 'approve'
+    : reconciliation.status === 'REJECTED' ? 'reject'
+      : undefined;
+  // PENDING_CUSTOMER (or anything unrecognised) means the customer has not
+  // answered yet — the local row stays pending rather than being nudged.
+  if (!decision) return undefined;
+
+  const pending = store.rowsOf(tenant, 'marketplace_reassessment')
+    .find((candidate) => candidate.data.externalOrderId === externalOrderId && candidate.data.state === 'PendingApproval');
+  if (!pending) return undefined;
+
+  // Attributed to the marketplace customer, NOT the operator whose sync
+  // happened to observe it — `decideMarketplaceReassessment` records its actor
+  // as `decidedBy`, and recording the local operator there would credit a
+  // store employee with a decision the customer made. Who observed it is still
+  // captured, in the audit entry below.
+  const decided = decideMarketplaceReassessment(tenant, CUSTOMER_DECISION_ACTOR, pending.id, decision);
+  audit(tenant, actor, 'marketplace:cloud-reassessment-decision-observed', {
+    entity: 'marketplace_reassessment',
+    row_id: decided.id,
+    after: { externalOrderId, remoteReconciliationId: reconciliation.id, remoteStatus: reconciliation.status, decision, decidedBy: CUSTOMER_DECISION_ACTOR, observedBy: actor, customerDecisionAt: reconciliation.customerDecisionAt },
+  });
+  return { reassessmentId: decided.id, decision, remoteStatus: reconciliation.status };
 }
 
 /**
@@ -124,9 +211,15 @@ export async function syncCloudOrderDetail(tenant: string, actor: string, extern
     processingStage: detail.processingStage ?? null,
     estimatedAmountPaise: detail.estimatedAmountPaise ?? null,
     payableAmountPaise: detail.payableAmountPaise ?? null,
+    latestReconciliation: detail.latestReconciliation ?? null,
+    timeline: detail.timeline,
   });
-  audit(tenant, actor, 'marketplace:cloud-order-detail-synced', { entity: 'marketplace_order_projection', row_id: saved.id, after: { externalOrderId, remoteStatus: detail.remoteStatus, lineCount: detail.lines.length } });
-  return { detail, projectionState: saved.state };
+  // This is the only place the customer's answer to a recount reaches Desktop:
+  // the list endpoint carries no reconciliation record, so a proposal stays
+  // pending locally until someone reads this order's detail again.
+  const customerDecision = resolveReassessmentFromRemote(tenant, actor, externalOrderId, detail.latestReconciliation);
+  audit(tenant, actor, 'marketplace:cloud-order-detail-synced', { entity: 'marketplace_order_projection', row_id: saved.id, after: { externalOrderId, remoteStatus: detail.remoteStatus, lineCount: detail.lines.length, reconciliationStatus: detail.latestReconciliation?.status } });
+  return { detail, projectionState: saved.state, customerDecision };
 }
 
 export type CloudStageOutcome = { externalOrderId: string; stage: CloudOrderStage; remoteStatus: string; projectionState: MarketplaceOrderState };

@@ -418,6 +418,55 @@ reassessment sat at `PendingApproval`, and the marketplace's own copy of the
 order still showed `confirmed_quantity: null` — it stages the proposal without
 applying it, exactly as its own documentation claims.
 
+## 4f. The customer's answer, and what evidence is actually readable (2026-09-11)
+
+**The recount loop now closes.** A proposal no longer sits locally forever:
+reading an order's detail brings back the marketplace's own reconciliation
+record and resolves the pending local reassessment from it.
+
+The signal is `order_reconciliations.status` (PENDING_CUSTOMER / ACCEPTED /
+REJECTED / APPLIED) — the marketplace's explicit record of what the customer
+did. The order's *status* is deliberately NOT used: an order can move on for
+reasons unrelated to a recount, and reading "the customer must have agreed"
+out of that would be Desktop inventing a decision. While the record still says
+PENDING_CUSTOMER nothing is nudged, and an already-decided reassessment is
+never decided twice.
+
+**An attribution bug was caught by looking at the result.** The first version
+recorded `decidedBy: <the Desktop operator whose sync happened to run>` —
+crediting a store employee with a decision the customer made, in a row whose
+whole purpose is explaining a price change afterwards. Now the decision is
+attributed to `marketplace:customer`, with the observing operator kept
+separately in the audit entry.
+
+**Evidence — what is and is not possible, from reading the backend.** The
+backend stores three photo contexts (`order_pickup_photos.context` =
+`RIDER_PICKUP` | `VENDOR_RECONCILIATION` | `DELIVERY_PROOF`), but the only
+read path anywhere in it selects photos by `order_reconciliation_id`
+(confirmed by grepping every query against that table — three call sites, all
+the same filter). **Rider pickup proof and delivery proof are therefore
+written and never readable by any client, the vendor included.** So Desktop
+now surfaces reconciliation evidence, and cannot surface the rest — recorded
+here as a backend capability gap rather than filled with a placeholder that
+would imply an evidence trail exists. Building the Evidence Center the mandate
+describes needs a backend read endpoint first.
+
+The marketplace's own status timeline (`order_events`: actor role, note, old
+and new status) now comes back with the detail too — the first real
+cross-system timeline data Desktop holds, including actors other than this
+store.
+
+**Live-verified both ways** against the real backend, with a real customer
+account acting on its own order: a recount was proposed from Desktop; while
+undecided, re-reading returned no decision and left the reassessment pending;
+the customer then **accepted** on the marketplace, and the next detail sync
+recorded `approve` with the reassessment `Approved`, the projection moved to
+`Processing`, and the real order line showed `estimated 2 → confirmed 4`;
+re-reading again decided nothing further. On a second order the customer
+**rejected**, and Desktop recorded `Rejected`, `decidedBy:
+marketplace:customer`, leaving the order needing attention. Throughout, the
+original request stayed immutable and unchanged.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple
@@ -432,10 +481,14 @@ applying it, exactly as its own documentation claims.
   photo URL cannot be exercised without real provider credentials. Desktop
   therefore takes evidence URLs today; wiring a file picker through
   `POST /uploads/image` is real work that cannot be verified here.
-- **The customer's decision is not read back.** A proposed recount sits at
-  `PendingApproval` locally until the next pull reflects the marketplace's new
-  status; Desktop does not yet subscribe to, or poll for, the customer's
-  accept/reject of a reconciliation.
+- **The customer's decision is read back only on demand.** Resolving a recount
+  requires reading that order's detail (`detail-sync`); the list endpoint
+  carries no reconciliation record, so nothing resolves on its own until
+  someone looks. With no background poll yet (above), a decided recount stays
+  locally pending until it is next opened.
+- **Rider and delivery evidence cannot be shown at all** — the backend has no
+  read path for them (§4f). This blocks the Evidence Center in mandate §36
+  until a backend endpoint exists.
 - **No scheduled/background sync.** `pullCloudOrders` only runs when
   `/api/marketplace/cloud/sync-orders` is called. Wiring a recurring poll —
   or better, reacting to the backend's already-running Socket.IO transport

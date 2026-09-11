@@ -23,6 +23,8 @@ type MockState = {
   /** Amounts the backend computes from ITS OWN rates — never sent by the client. */
   previousPayablePaise: number;
   proposedPayablePaise: number;
+  /** The marketplace's own reconciliation record, per order. */
+  reconciliations: Map<string, { id: string; status: string; photos: string[]; reason?: string }>;
 };
 
 function buildMockFetch(state: MockState): typeof fetch {
@@ -60,15 +62,22 @@ function buildMockFetch(state: MockState): typeof fetch {
         return json(400, { success: false, message: 'Cannot propose a reconciliation at this order stage', code: 'INVALID_STAGE' });
       }
       order.status = 'RECONCILIATION_PENDING';
-      return json(200, { success: true, data: { orderId: order.id, status: 'RECONCILIATION_PENDING', reconciliation_id: 'recon-remote-1', previous_payable_amount_paise: state.previousPayablePaise, proposed_payable_amount_paise: state.proposedPayablePaise } });
+      state.reconciliations.set(order.id, { id: `recon-${order.id}`, status: 'PENDING_CUSTOMER', photos: body.photo_urls, reason: body.adjustment_reason });
+      return json(200, { success: true, data: { orderId: order.id, status: 'RECONCILIATION_PENDING', reconciliation_id: `recon-${order.id}`, previous_payable_amount_paise: state.previousPayablePaise, proposed_payable_amount_paise: state.proposedPayablePaise } });
     }
 
     const detailMatch = path.match(/^\/vendor\/orders\/([^/?]+)$/);
     if (detailMatch && method === 'GET') {
       const order = state.remote.get(detailMatch[1]);
       if (!order) return json(404, { success: false, message: 'Order not found', code: 'ORDER_NOT_FOUND' });
+      const recon = state.reconciliations.get(order.id);
       return json(200, { success: true, data: {
         ...order, estimated_amount_paise: 28000, payable_amount_paise: state.previousPayablePaise,
+        timeline: [
+          { old_status: 'WAITING_VENDOR_CONFIRMATION', new_status: 'VENDOR_ACCEPTED', actor_role: 'VENDOR_OWNER', note: 'Vendor accepted the order', timestamp: '2026-09-14T10:05:00Z' },
+          { old_status: 'VENDOR_ACCEPTED', new_status: 'RECEIVED_AT_VENDOR', actor_role: 'VENDOR_OWNER', note: null, timestamp: '2026-09-14T11:00:00Z' },
+        ],
+        latestReconciliation: recon ? { id: recon.id, status: recon.status, reason: recon.reason, previous_payable_amount_paise: state.previousPayablePaise, proposed_payable_amount_paise: state.proposedPayablePaise, customer_decision_at: recon.status === 'PENDING_CUSTOMER' ? null : '2026-09-14T12:00:00Z', photos: recon.photos } : null,
         lines: [
           { id: 'line-1', garment_type_id: 'gt-shirt', garment_type_name: 'Shirt', garment_unit: 'PIECE', rate_paise: 6000, estimated_quantity: 3, confirmed_quantity: null },
           { id: 'line-2', garment_type_id: 'gt-wash', garment_type_name: 'Wash & fold', garment_unit: 'KG', rate_paise: 8000, estimated_quantity: 2, confirmed_quantity: null },
@@ -105,6 +114,7 @@ try {
     posts: [],
     previousPayablePaise: 28000,
     proposedPayablePaise: 34000,
+    reconciliations: new Map(),
     remote: new Map([[ORDER, { id: ORDER, order_number: 'LND-RECON-1', status: 'VENDOR_ACCEPTED' }]]),
   };
   (globalThis as any).fetch = buildMockFetch(state);
@@ -163,7 +173,7 @@ try {
   assert.equal(reconcile.statusCode, 200);
   const outcome = reconcile.json();
   assert.equal(outcome.remoteStatus, 'RECONCILIATION_PENDING');
-  assert.equal(outcome.reconciliationId, 'recon-remote-1');
+  assert.equal(outcome.reconciliationId, `recon-${ORDER}`);
   assert.equal(outcome.previousPayableAmountPaise, 28000);
   assert.equal(outcome.proposedPayableAmountPaise, 34000, 'the amounts come from the marketplace, which prices it from the vendor\'s own approved rates');
   assert.equal(outcome.deltaPaise, 6000);
@@ -196,6 +206,50 @@ try {
   assert.equal(reassessment.data.tolerancePaise, 0, 'no tolerance band can silently auto-approve part of a marketplace price change');
   assert.equal(reassessment.id, outcome.reassessmentId);
 
+  // ── The customer's decision comes back from the marketplace ──
+  // While the marketplace still says PENDING_CUSTOMER, re-reading the order
+  // must NOT nudge the local decision one way or the other.
+  const stillPending = await app.inject({ method: 'POST', url: `/api/marketplace/cloud/orders/${ORDER}/detail-sync`, headers });
+  assert.equal(stillPending.statusCode, 200);
+  assert.equal(stillPending.json().customerDecision, undefined, 'a pending recount stays pending — Desktop never advances it on its own');
+  assert.equal(truthOf().reassessments[0].data.state, 'PendingApproval');
+  assert.equal(stillPending.json().detail.latestReconciliation.status, 'PENDING_CUSTOMER');
+  assert.equal(stillPending.json().detail.latestReconciliation.photos.length, 2, 'the evidence attached to the recount is readable back');
+  assert.equal(stillPending.json().detail.timeline.length, 2, "the marketplace's own status history comes back, including actors other than this store");
+  assert.equal(stillPending.json().detail.timeline[0].actorRole, 'VENDOR_OWNER');
+
+  // The customer accepts on the marketplace, exactly as their app would.
+  state.reconciliations.get(ORDER)!.status = 'ACCEPTED';
+  state.remote.get(ORDER)!.status = 'PROCESSING';
+  const accepted = await app.inject({ method: 'POST', url: `/api/marketplace/cloud/orders/${ORDER}/detail-sync`, headers });
+  assert.equal(accepted.statusCode, 200);
+  assert.deepEqual(
+    { decision: accepted.json().customerDecision.decision, remoteStatus: accepted.json().customerDecision.remoteStatus },
+    { decision: 'approve', remoteStatus: 'ACCEPTED' },
+    "the marketplace's own record of the customer decision is what resolves the local reassessment",
+  );
+  assert.equal(truthOf().reassessments[0].data.state, 'Approved');
+  assert.equal(truthOf().reassessments[0].data.decidedBy, 'marketplace:customer', 'the customer is recorded as the decider, not the operator whose sync observed it');
+  assert.equal(accepted.json().projectionState, 'Processing');
+
+  // Re-reading again must not double-decide or throw.
+  const reRead = await app.inject({ method: 'POST', url: `/api/marketplace/cloud/orders/${ORDER}/detail-sync`, headers });
+  assert.equal(reRead.statusCode, 200);
+  assert.equal(reRead.json().customerDecision, undefined, 'an already-decided reassessment is not decided a second time');
+  assert.equal(truthOf().reassessments[0].data.state, 'Approved');
+
+  // ── And a rejection is carried across just as faithfully ──
+  state.remote.set('order-recon-3', { id: 'order-recon-3', order_number: 'LND-RECON-3', status: 'RECEIVED_AT_VENDOR' });
+  await app.inject({ method: 'POST', url: '/api/marketplace/cloud/sync-orders', headers });
+  await app.inject({ method: 'POST', url: '/api/marketplace/cloud/orders/order-recon-3/reconcile', headers, payload: { photoUrls: ['https://evidence.test/r3.jpg'], lines: [{ orderLineId: 'line-1', confirmedQuantity: 9 }], reason: 'Counted nine' } });
+  state.reconciliations.get('order-recon-3')!.status = 'REJECTED';
+  state.remote.get('order-recon-3')!.status = 'RECONCILIATION_DISPUTED';
+  const rejectedSync = await app.inject({ method: 'POST', url: '/api/marketplace/cloud/orders/order-recon-3/detail-sync', headers });
+  assert.equal(rejectedSync.json().customerDecision.decision, 'reject');
+  const rejectedTruth = store.withStoreScope(TENANT, STORE, () => marketplaceOrderTruth(TENANT, 'order-recon-3'));
+  assert.equal(rejectedTruth.reassessments[0].data.state, 'Rejected', 'a customer rejection is recorded as a rejection, not quietly dropped');
+  assert.equal(rejectedSync.json().projectionState, 'CustomerApprovalRequired', 'a disputed recount still needs someone to act');
+
   // ── A recount that changes nothing must not invent a decision ──
   state.remote.set('order-recon-2', { id: 'order-recon-2', order_number: 'LND-RECON-2', status: 'RECEIVED_AT_VENDOR' });
   state.proposedPayablePaise = state.previousPayablePaise;
@@ -217,7 +271,7 @@ try {
   assert.equal(packed.json().projectionState, 'Ready');
   assert.equal(state.posts.at(-1)!.body.delivery_slot_label, 'Tomorrow 9-11am', 'the dispatch slot reaches the marketplace only on PACKED');
 
-  console.log('PASS marketplace cloud reconciliation: immutable original request, real remote line ids, stage gating with an actionable reason, mandatory evidence, marketplace-priced amounts, no locally-invented customer approval, and outward stage progression self-test complete');
+  console.log('PASS marketplace cloud reconciliation: immutable original request, real remote line ids, stage gating with an actionable reason, mandatory evidence, marketplace-priced amounts, no locally-invented customer approval, customer decision read back from the marketplace record, recount evidence and remote timeline, and outward stage progression self-test complete');
 } finally {
   globalThis.fetch = originalFetch;
   delete process.env.EPIC_MARKETPLACE_CLOUD_API_URL;
