@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, CircleDollarSign, Landmark, Loader2, ReceiptText, ShieldCheck, Target, WalletCards } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3, CircleDollarSign, Landmark, ReceiptText, ShieldCheck, Target, WalletCards } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useEffect, useMemo, useState } from 'react'
 import { apiGet, apiPut } from '@/lib/api'
 import { formatINR, localDateKey } from '@/lib/utils'
 import ChartAccessibility from '@/components/laundry/ChartAccessibility'
+import VisualLoadingState from '@/components/laundry/VisualLoadingState'
 
 type Center = any
 const palette = ['#664cf0', '#9b87ff', '#2875d7', '#d88a22', '#187b5c', '#a06bcd', '#7e7896', '#d46259']
@@ -62,7 +63,7 @@ function HealthRow({ label, state, basis }: { label: string; state: 'Healthy' | 
 function Status({ label, value, tone }: {label:string;value:string;tone:'good'|'watch'}) { return <div className="flex items-center justify-between gap-3 rounded-xl bg-[#fafbf9] p-3 text-sm"><span className="text-[#617178]">{label}</span><span className={tone === 'good' ? 'font-bold text-[#32695f]' : 'font-bold text-[#a16a16]'}>{value}</span></div> }
 function MoneyTooltip({ active, payload, label }: any) { if (!active || !payload?.length) return null; return <div className="rounded-xl border border-[#dbe7e1] bg-white px-3 py-2 text-xs shadow-xl"><p className="mb-1 font-bold text-[#17353c]">{label ? shortDate(label) : ''}</p>{payload.map((row:any) => <p key={row.name} className="flex justify-between gap-6 text-[#617178]"><span>{row.name}</span><strong style={{color:row.color}}>{formatINR(Number(row.value || 0))}</strong></p>)}</div> }
 function ChartLegend({ rows }: { rows: [string,string][] }) { return <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-[#718087]">{rows.map(([color,label])=><span key={label} className="inline-flex items-center gap-2"><i className="h-2.5 w-2.5 rounded-full" style={{backgroundColor:color}}/>{label}</span>)}</div> }
-function Loading() { return <div className="grid min-h-96 place-items-center"><div className="text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-[#39786f]"/><p className="mt-3 text-sm text-[#718087]">Building the finance view from local records…</p></div></div> }
+function Loading() { return <VisualLoadingState title="Preparing your finance command center" detail="We are reading the latest posted invoices, payments, expenses and settlement records from this local workspace." icon={Landmark} /> }
 function Failure({ message }: { message:string }) { return <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 text-rose-800"><AlertTriangle className="h-5 w-5"/><p className="mt-3 font-bold">Finance command center unavailable</p><p className="mt-1 text-sm">{message}</p></div> }
 function maybeMoney(value: number | null) { return value === null ? 'Not ready' : formatINR(value) }
 function metricState(ready: boolean, fallback: string) { return ready ? 'Management classification policy' : fallback }
