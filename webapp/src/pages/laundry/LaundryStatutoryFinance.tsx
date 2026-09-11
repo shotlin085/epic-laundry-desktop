@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowLeft, Calculator, CalendarClock, CheckCircle2, ChevronRight, FileCheck2, FileText, Landmark, Loader2, Plus, ReceiptIndianRupee, ShieldCheck, X } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Calculator, CalendarClock, CheckCircle2, ChevronRight, FileCheck2, FileText, Landmark, Plus, ReceiptIndianRupee, ShieldCheck, X } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { apiGet, apiPost, apiPut } from '@/lib/api'
 import { formatINR, localDateKey } from '@/lib/utils'
+import VisualLoadingState from '@/components/laundry/VisualLoadingState'
 
 type Tab = 'overview' | 'liabilities' | 'returns' | 'policies'
 type ReturnRecord = { id: string; returnType: string; periodStart: string; periodEnd: string; dueDate: string; transactionCount: number; amountPaise: number; state: string; evidence?: string; acknowledgement?: string }
@@ -107,7 +108,7 @@ function SectionLabel({ children }: { children: ReactNode }) { return <p classNa
 function Row({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) { return <div className="flex items-start justify-between gap-4 text-xs"><span className="text-[#657681]">{label}</span><span className={`max-w-[64%] text-right ${strong ? 'font-extrabold text-[#17353c]' : 'font-bold text-[#43565f]'}`}>{value}</span></div> }
 function Choice({ label, detail, selected, disabled }: { label: string; detail: string; selected?: boolean; disabled?: boolean }) { return <div className={`rounded-2xl border p-4 ${selected ? 'border-[#6b4df5] bg-[#f6f3ff]' : 'border-[#dfe6e8] bg-[#fafbfb]'} ${disabled ? 'opacity-55' : ''}`}><div className="flex items-center gap-2"><span className={`grid h-5 w-5 place-items-center rounded-full border ${selected ? 'border-[#6b4df5] bg-[#6b4df5] text-white' : 'border-[#b9c6ca]'}`}>{selected ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}</span><p className="text-sm font-extrabold text-[#17353c]">{label}</p></div><p className="mt-2 pl-7 text-xs leading-5 text-[#657681]">{detail}</p></div> }
 function ErrorNotice({ error }: { error: unknown }) { return <p className="rounded-xl bg-rose-50 p-3 text-xs leading-5 text-rose-700">{error instanceof Error ? error.message : 'The statutory action could not be completed.'}</p> }
-function Loading() { return <div className="grid min-h-96 place-items-center"><div className="text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-[#6b4df5]" /><p className="mt-3 text-sm text-[#718087]">Loading finance controls…</p></div></div> }
+function Loading() { return <VisualLoadingState title="Preparing statutory controls" detail="We are reading posted liabilities, return readiness, policy versions and recorded evidence for this workspace." icon={ShieldCheck} /> }
 function Failure({ message }: { message: string }) { return <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 text-rose-800"><AlertTriangle className="h-5 w-5" /><p className="mt-3 font-bold">Finance controls unavailable</p><p className="mt-1 text-sm">{message}</p></div> }
 function healthPresentation(value: string) { return value === 'ACTION_REQUIRED' ? { tone: 'critical' as const, label: 'Attention required', detail: 'A return or evidence item needs review.' } : value === 'ON_TRACK_WITH_ACTIONS' ? { tone: 'attention' as const, label: 'On track with actions', detail: 'Upcoming work is visible below.' } : { tone: 'good' as const, label: 'Controlled', detail: 'No recorded exception needs attention.' } }
 function timelineTone(value: string): 'good' | 'attention' | 'critical' | 'neutral' { return value === 'COMPLETE' ? 'good' : value === 'OVERDUE' ? 'critical' : value === 'DUE_SOON' ? 'attention' : 'neutral' }

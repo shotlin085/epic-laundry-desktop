@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, CircleOff, Cloud, Clock3, Database, RefreshCw, Server, ShieldAlert, WifiOff } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { apiGet } from '@/lib/api'
+import VisualLoadingState from '@/components/laundry/VisualLoadingState'
 
 type SyncStatus = {
   version: number
@@ -27,7 +28,7 @@ function statusTone(status: string) {
 
 export default function LaundrySyncStatus() {
   const sync = useQuery({ queryKey: ['marketplace-sync-status'], queryFn: () => apiGet<SyncStatus>('/marketplace/sync/status'), refetchInterval: 30_000 })
-  if (sync.isLoading) return <div className="grid h-80 place-items-center"><RefreshCw className="h-6 w-6 animate-spin text-[#3a7d78]" /></div>
+  if (sync.isLoading) return <VisualLoadingState title="Preparing marketplace sync status" detail="We are reading this device’s local outbox, inbox and checkpoint records. Local laundry operations remain available while sync loads." icon={Cloud} />
   if (sync.isError || !sync.data) return <section className="rounded-[22px] border border-rose-200 bg-rose-50 p-6 text-rose-800"><div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" /><div><h1 className="font-serif text-2xl">Sync status unavailable</h1><p className="mt-1 text-sm">The local status endpoint could not be read. The desktop remains local-first; verify the local server before retrying.</p><button type="button" onClick={() => void sync.refetch()} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[#123039] px-3 py-2 text-xs font-bold text-white"><RefreshCw className="h-3.5 w-3.5" />Retry</button></div></div></section>
 
   const data = sync.data
