@@ -151,18 +151,92 @@ plumbing; the mocked assertion plus the code being read directly from the
 real backend's own resolver function is the verification basis for that
 specific branch.
 
+## 4b. Real order pull — the first durable-sync slice (2026-09-11, same-day)
+
+Built `cloud-order-sync.ts#pullCloudOrders`: pulls this store's real orders
+from `GET /vendor/orders` on the connected vendor account and materializes
+each into `marketplace_order_projections` (channel `MARKETPLACE`), the exact
+projection table `edge-sync.ts`'s envelope pipeline also writes to.
+
+**Deliberately does not go through `receiveMarketplaceOrder`/edge-sync.ts's
+envelope pipeline.** That pipeline is gated behind `requireRegisteredDevice`,
+which needs a marketplace device with `status='Registered'` — but Desktop's
+own device-enrollment flow is permanently blocked
+(`activation: 'EXTERNAL_MARKETPLACE_ACTIVATION_REQUIRED'`) because there is
+nothing on the real backend to activate it against. Routing through that
+gate would mean building a second fake activation flow, or bypassing a check
+that exists for a reason, for a transport this feature doesn't use. Instead
+this calls `store.saveMarketplaceOrderProjection` directly — the real,
+already-idempotent persistence layer the envelope pipeline itself calls into
+— using the connected cloud session as an independent trust boundary. This
+does NOT touch or weaken the device/envelope gate; that gate still fully
+protects the (currently unreachable) envelope path.
+
+**Status mapping caught a second real contract bug, live.** The real
+Postgres `order_status` enum (queried directly against a live backend:
+`SELECT unnest(enum_range(NULL::order_status))` — 27 values) does **not**
+contain `WASHING`/`DRYING`/`IRONING`. Those strings only exist in
+`vendor-orders.routes.js`'s querystring *filter* schema — the service
+translates a `?status=WASHING` filter into `status = 'PROCESSING' AND
+processing_stage = 'Washing'` for the query, but the value actually stored
+in and returned from `orders.status` is `'PROCESSING'`. The first version of
+the mapping table keyed on `WASHING`/`DRYING`/`IRONING`, which would have
+silently skipped every real order in a wash/dry/iron stage as "unmapped
+status" — proven live: a real order inserted with `processing_stage =
+'Washing'` came back from the real `/vendor/orders` endpoint as
+`"status":"PROCESSING"`, and the mapping table has been corrected to key on
+that real value. The full remap, and which entries are confirmed-live vs.
+best-effort, is documented in `cloud-order-sync.ts`'s own header comment.
+
+**Full live verification, using a real seeded vendor, not a synthetic one.**
+`Lndry_backend`'s own `npm run db:seed` creates a real, `APPROVED`,
+`marketplace_published` demo vendor ("LNDRY Prime - Bengaluru Hub") linked as
+`VENDOR_OWNER` to phone `7013352181` — used exactly as-is, not a fixture
+built for this test. Live sequence: connected Desktop to this account
+(`remoteVendorId`/`remoteVendorName` resolved correctly to the real vendor
+row), confirmed an empty real order list round-trips to `{pulled:0}` cleanly
+(no crash on zero orders), inserted one real order directly into the real
+`orders` table (`status='PROCESSING'`, `processing_stage='Washing'`,
+real subtotal/delivery fee), reran the sync, and confirmed via the existing
+`GET /api/marketplace/orders` route (not a new endpoint built just to check
+this) that the materialized projection carries the correct state
+(`"Processing"`), the correct real vendor id (not the connecting user id —
+re-confirming §4a's identity split against yet another real code path),
+the correct real order number, customer phone, and subtotal. Also confirmed
+this specific account's real oddity is handled correctly: it is
+simultaneously `role: "CUSTOMER"` (the base `users.role` column) and
+`VENDOR_OWNER` (via `vendor_employees`) — exactly the scenario §4a's identity
+split was designed for, now validated against a real multi-role account
+instead of only a mocked one.
+
+Also verified idempotency and change-detection with mocked data (a full
+mocked self-test, `test:marketplace-cloud-order-sync`, covers: not-connected,
+connected-but-no-vendor, the real per-order field names read verbatim from
+`vendor-orders.service.js`'s SQL `SELECT`, one deliberately-unmapped status
+being skipped-with-reason rather than crashing the whole pull, re-syncing
+unchanged data creating zero duplicates while advancing `sourceVersion`, and
+a status change on the backend being picked up on the next pull) —
+re-running the exact live insert/sync sequence for every one of those cases
+was not repeated, since the mock's field names and status values are now
+themselves derived from the live-confirmed real shapes above, not from a
+fresh guess.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple
   vendors/roles connects with whatever default scope `verify-otp` grants.
   Real, scoped follow-up work, not a silent gap.
-- Does not feed real backend data into Desktop's existing local marketplace
-  projections (`order-truth.ts`, `catalogue.ts`, etc.). This connector proves
-  the transport and identity model work; wiring real orders through it into
-  the projections `edge-sync.ts` already models durably is the next phase
-  ("cross-system identity" / "durable sync" in the mandate's own dependency
-  order), deliberately not attempted in the same change as the foundation
-  itself.
+- **Orders only, read/pull only, on-demand only, as of §4b.** Real vendor
+  orders now do materialize into `marketplace_order_projections` — but:
+  catalogue, availability, capacity/slots, and settlement still have no real
+  backend data flowing in at all (only orders were scoped for this pass).
+  There is no outbound push (accepting/rejecting an order locally does not
+  yet call the real backend's `/vendor/orders/:id/accept` etc. — pulled
+  orders are currently read-only in Desktop). And there is no
+  scheduled/background polling — `pullCloudOrders` only runs when the
+  `/api/marketplace/cloud/sync-orders` route is called; wiring a recurring
+  poll (or, better, reacting to the backend's already-running Socket.IO
+  transport instead of polling) is separate, real, scoped follow-up work.
 - Does not touch `edge-sync.ts`'s outbox/inbox at all. That machinery remains
   real, tested, and local-only until a decision is made about whether the
   backend should grow a matching sync protocol (a large, separate proposal)

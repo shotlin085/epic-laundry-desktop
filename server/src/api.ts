@@ -95,6 +95,7 @@ import { customerFacingOrderStatus, customerStatusMapping, saveCustomerStatusMap
 import { completeMarketplacePickup, marketplacePickupTask, scheduleMarketplacePickup } from './modules/marketplace/pickup.js';
 import { connectCloudSession, disconnectCloudSession, fetchConnectedVendorProfile, getCloudConnectionStatus, requestCloudOtp } from './modules/marketplace/cloud-session.js';
 import { CloudClientError } from './modules/marketplace/cloud-client.js';
+import { pullCloudOrders } from './modules/marketplace/cloud-order-sync.js';
 import { renderCanonicalTaxInvoice } from './modules/gst/canonical-invoice-print.js';
 import { approveTaxPolicyRule, createTaxPolicyRule, listTaxPolicyRules, retireTaxPolicyRule, saveSupplierTaxProfile, supplierTaxProfile, taxReadiness } from './modules/gst/tax-policy.js';
 import { auditGarmentAssets } from './modules/laundry/garment-assets.js';
@@ -425,8 +426,10 @@ export function registerApi(app: FastifyInstance) {
       if (error.code === 'CLOUD_TIMEOUT' || error.code === 'CLOUD_UNREACHABLE') return 502;
       return 400;
     }
-    if (error instanceof Error && (error.message === 'CLOUD_NOT_CONFIGURED' || error.message === 'CLOUD_NOT_CONNECTED')) return 409;
+    if (error instanceof Error && (error.message === 'CLOUD_NOT_CONFIGURED' || error.message === 'CLOUD_NOT_CONNECTED' || error.message === 'CLOUD_VENDOR_NOT_LINKED')) return 409;
     if (error instanceof Error && error.message === 'CLOUD_CONNECT_INPUT_REQUIRED') return 400;
+    if (error instanceof Error && error.message.startsWith('CLOUD_ORDER_UNKNOWN_STATUS')) return 502;
+    if (error instanceof Error && error.message === 'CLOUD_ORDER_LIST_UNEXPECTED_RESPONSE') return 502;
     return 400;
   };
   const cloudErrorBody = (error: unknown) => {
@@ -789,6 +792,10 @@ export function registerApi(app: FastifyInstance) {
   });
   app.get('/api/marketplace/cloud/vendor-profile', { preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
     try { return await fetchConnectedVendorProfile(req.auth!.tenant); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/marketplace/cloud/sync-orders', { preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await pullCloudOrders(req.auth!.tenant, req.auth!.actor); }
     catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   app.get('/api/marketplace/catalogue/mappings', { schema: { querystring: marketplaceCatalogueQuery }, preHandler: [guard, allow('catalogue.read')] }, async (req: any) =>

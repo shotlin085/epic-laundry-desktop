@@ -186,18 +186,31 @@ export async function disconnectCloudSession(tenant: string, fetchImpl: FetchLik
 }
 
 /**
- * Fetches one real piece of connected-vendor data from the real backend,
- * using the stored session (refreshing the access token once if needed). This
+ * Calls any already-mounted, already-authenticated backend GET endpoint using
+ * the connected session's stored tokens, transparently refreshing and
+ * persisting a rotated access token if the current one has expired.
+ *
+ * This is the one shared plumbing point every "pull real X from the cloud"
+ * feature should go through (vendor profile, orders, …) rather than each
+ * reimplementing token decrypt/refresh/persist — exported so other modules
+ * (e.g. cloud-order-sync.ts) can build on it without duplicating it.
+ */
+export async function callConnectedCloudApi(tenant: string, path: string, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  const baseUrl = requireConfigured();
+  const session = store.getMarketplaceCloudSession(tenant);
+  if (!session || session.status !== 'Connected') throw new Error('CLOUD_NOT_CONNECTED');
+  const tokens = decryptTokens(session.encryptedTokensJson);
+  return cloudClient.authenticatedGet(fetchImpl, baseUrl, path, tokens, (refreshed) => {
+    store.saveMarketplaceCloudSession({ ...session, encryptedTokensJson: encryptTokens(refreshed), tokenExpiresAt: refreshed.accessTokenExpiresAt, updatedAt: new Date().toISOString() });
+  });
+}
+
+/**
+ * Fetches one real piece of connected-vendor data from the real backend. This
  * is the actual proof that the connector works end to end, not just that
  * auth succeeds — exported for the settings UI and for tests, not just as an
  * internal helper.
  */
 export async function fetchConnectedVendorProfile(tenant: string, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
-  const baseUrl = requireConfigured();
-  const session = store.getMarketplaceCloudSession(tenant);
-  if (!session || session.status !== 'Connected') throw new Error('CLOUD_NOT_CONNECTED');
-  const tokens = decryptTokens(session.encryptedTokensJson);
-  return cloudClient.authenticatedGet(fetchImpl, baseUrl, '/vendor/profile', tokens, (refreshed) => {
-    store.saveMarketplaceCloudSession({ ...session, encryptedTokensJson: encryptTokens(refreshed), tokenExpiresAt: refreshed.accessTokenExpiresAt, updatedAt: new Date().toISOString() });
-  });
+  return callConnectedCloudApi(tenant, '/vendor/profile', fetchImpl);
 }
