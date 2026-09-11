@@ -51,7 +51,7 @@ const EVIDENCE_CONTEXT_LABEL: Record<string, string> = { RIDER_PICKUP: 'Rider pi
 const REMOTE_STAGE_LABEL: Record<string, string> = {
   WAITING_VENDOR_CONFIRMATION: 'Awaiting your acceptance', VENDOR_ACCEPTED: 'Accepted, awaiting pickup', PICKUP_ASSIGNED: 'Pickup assigned', GOING_FOR_PICKUP: 'Rider on the way', PICKUP_OTP_VERIFIED: 'Pickup OTP verified', PICKED_UP: 'Picked up, in transit',
   RECEIVED_AT_VENDOR: 'Received at your store', RECONCILIATION_PENDING: 'Recount awaiting customer', RECONCILIATION_DISPUTED: 'Customer disputed the recount',
-  PROCESSING: 'Processing', DELIVERY_ASSIGNED: 'Delivery assigned', OUT_FOR_DELIVERY: 'Out for delivery', DELIVERY_OTP_VERIFIED: 'Delivery OTP verified', DELIVERED: 'Delivered',
+  PROCESSING: 'Processing', PACKED: 'Packed, ready for dispatch', DELIVERY_ASSIGNED: 'Delivery assigned', OUT_FOR_DELIVERY: 'Out for delivery', DELIVERY_OTP_VERIFIED: 'Delivery OTP verified', DELIVERED: 'Delivered',
   VENDOR_REJECTED: 'Rejected', AUTO_REJECTED: 'Auto-rejected', CUSTOMER_CANCELLED: 'Cancelled by customer', ADMIN_CANCELLED: 'Cancelled by platform', REFUNDED: 'Refunded',
 }
 // The real backend's processing-stage endpoint accepts RECEIVED_AT_VENDOR as a
@@ -73,12 +73,14 @@ type CloudDetailPanelProps = {
   syncing: boolean
   syncFailed: boolean
   onSync: () => void
-  onAdvanceStage: (stage: string) => void
+  onAdvanceStage: (stage: string, packedDelivery?: { deliverySlotLabel?: string; deliverySlotAt?: string }) => void
   onReconcile: () => void
   reconLineId: string; setReconLineId: (value: string) => void
   reconQty: string; setReconQty: (value: string) => void
   reconPhotoUrls: string; setReconPhotoUrls: (value: string) => void
   reconReason: string; setReconReason: (value: string) => void
+  packedSlotLabel: string; setPackedSlotLabel: (value: string) => void
+  packedSlotAt: string; setPackedSlotAt: (value: string) => void
 }
 
 
@@ -144,6 +146,8 @@ export default function LaundryOnlineOrders() {
   const [reconQty, setReconQty] = useState('')
   const [reconPhotoUrls, setReconPhotoUrls] = useState('')
   const [reconReason, setReconReason] = useState('')
+  const [packedSlotLabel, setPackedSlotLabel] = useState('')
+  const [packedSlotAt, setPackedSlotAt] = useState('')
 
   const session = useQuery({ queryKey: ['auth-session'], queryFn: () => apiGet<{ user: { roles: string[] } | null }>('/auth/session') })
   const canEdit = canUseUi(session.data?.user?.roles, 'orders.edit')
@@ -241,8 +245,13 @@ export default function LaundryOnlineOrders() {
   // full detail so the operator sees the marketplace's own resulting status
   // immediately rather than a stale one.
   const stageAdvance = useMutation({
-    mutationFn: ({ id, stage }: { id: string; stage: string }) => apiPost<CloudStageOutcome>(`/marketplace/cloud/orders/${encodeURIComponent(id)}/stage`, { stage }),
-    onSuccess: (result, variables) => { setNotice(`The marketplace now shows ${REMOTE_STAGE_LABEL[result.remoteStatus] || result.remoteStatus}.`); void detailSync.mutate(variables.id); invalidate() },
+    mutationFn: ({ id, stage, deliverySlotLabel, deliverySlotAt }: { id: string; stage: string; deliverySlotLabel?: string; deliverySlotAt?: string }) =>
+      apiPost<CloudStageOutcome>(`/marketplace/cloud/orders/${encodeURIComponent(id)}/stage`, { stage, ...(deliverySlotLabel ? { deliverySlotLabel } : {}), ...(deliverySlotAt ? { deliverySlotAt } : {}) }),
+    onSuccess: (result, variables) => {
+      setNotice(`The marketplace now shows ${REMOTE_STAGE_LABEL[result.remoteStatus] || result.remoteStatus}.`)
+      if (variables.stage === 'PACKED') { setPackedSlotLabel(''); setPackedSlotAt('') }
+      void detailSync.mutate(variables.id); invalidate()
+    },
   })
   const reconcile = useMutation({
     mutationFn: ({ id, orderLineId, confirmedQuantity, photoUrls, reason }: { id: string; orderLineId: string; confirmedQuantity: number; photoUrls: string[]; reason: string }) =>
@@ -314,9 +323,10 @@ export default function LaundryOnlineOrders() {
         {!selected ? <div className="grid min-h-[420px] place-items-center p-8 text-center"><Inbox className="h-8 w-8 text-[#8fb2a8]" /><p className="mt-3 font-serif text-xl">Select a request</p><p className="mt-1 max-w-xs text-sm leading-6 text-[#b3c8c1]">The work card will keep request, intake, payment, sync, and action evidence together.</p></div> : <OrderDetail canEdit={canEdit} cloudReady={cloudReady} cloudBlocker={cloudBlocker} order={selected} truth={truth.data} customerStatus={customerStatus.data} pickup={pickup.data} localOrder={localOrder.data} pickupDate={pickupDate} setPickupDate={setPickupDate} pickupWindow={pickupWindow} setPickupWindow={setPickupWindow} pickupRider={pickupRider} setPickupRider={setPickupRider} catalogue={catalogue.data} intakeLines={intakeLines} setIntakeLines={setIntakeLines} intakeGarment={intakeGarment} setIntakeGarment={setIntakeGarment} intakeService={intakeService} setIntakeService={setIntakeService} intakeQty={intakeQty} setIntakeQty={setIntakeQty} intakeBagCount={intakeBagCount} setIntakeBagCount={setIntakeBagCount} onAddLine={addIntakeLine} onSubmitIntake={submitIntake} actionPending={action.isPending || intake.isPending || pickupAction.isPending} onAccept={() => action.mutate({ id: selected.externalOrderId, kind: 'accept' })} onMaterialize={() => action.mutate({ id: selected.externalOrderId, kind: 'materialize' })} onSchedulePickup={() => pickupAction.mutate({ id: selected.externalOrderId, kind: 'schedule' })} onCollectPickup={() => pickupAction.mutate({ id: selected.externalOrderId, kind: 'collect' })} onReject={() => { if (rejectReason.trim()) action.mutate({ id: selected.externalOrderId, kind: 'reject', reason: rejectReason.trim() }) }} rejectReason={rejectReason} setRejectReason={setRejectReason} cloud={{
           detail: cloudDetail, pending: stageAdvance.isPending || reconcile.isPending, syncing: detailSync.isPending, syncFailed: detailSync.isError,
           onSync: () => detailSync.mutate(selected.externalOrderId),
-          onAdvanceStage: (stage) => stageAdvance.mutate({ id: selected.externalOrderId, stage }),
+          onAdvanceStage: (stage, packedDelivery) => stageAdvance.mutate({ id: selected.externalOrderId, stage, deliverySlotLabel: packedDelivery?.deliverySlotLabel, deliverySlotAt: packedDelivery?.deliverySlotAt }),
           onReconcile: () => { const qty = Number(reconQty); const photoUrls = reconPhotoUrls.split(/[\n,]/).map((url) => url.trim()).filter(Boolean); if (!reconLineId || !Number.isFinite(qty) || qty < 0 || !photoUrls.length) return; reconcile.mutate({ id: selected.externalOrderId, orderLineId: reconLineId, confirmedQuantity: qty, photoUrls, reason: reconReason.trim() }) },
           reconLineId, setReconLineId, reconQty, setReconQty, reconPhotoUrls, setReconPhotoUrls, reconReason, setReconReason,
+          packedSlotLabel, setPackedSlotLabel, packedSlotAt, setPackedSlotAt,
         }} />}
       </aside>
     </div>
@@ -398,7 +408,15 @@ function MarketplaceProgressPanel({ canEdit, cloudReady, cloud }: { canEdit: boo
 
       {canEdit ? <>
         {canMarkReceived ? <button type="button" disabled={cloud.pending} onClick={() => cloud.onAdvanceStage('RECEIVED_AT_VENDOR')} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#a8ddc6] px-3 py-2.5 text-xs font-bold text-[#173f46] disabled:opacity-50"><PackageCheck className="h-3.5 w-3.5" />Mark received at store</button> : null}
-        {canAdvanceStage ? <div className="flex flex-wrap gap-1.5">{(['WASHING', 'DRYING', 'IRONING', 'PACKED'] as const).map((stage) => <button key={stage} type="button" disabled={cloud.pending} onClick={() => cloud.onAdvanceStage(stage)} className="rounded-lg border border-white/15 px-2.5 py-1.5 text-[10px] font-bold text-[#dcebe4] hover:bg-white/10 disabled:opacity-50">{stage.charAt(0) + stage.slice(1).toLowerCase()}</button>)}</div> : null}
+        {canAdvanceStage ? <div className="flex flex-wrap gap-1.5">{(['WASHING', 'DRYING', 'IRONING'] as const).map((stage) => <button key={stage} type="button" disabled={cloud.pending} onClick={() => cloud.onAdvanceStage(stage)} className="rounded-lg border border-white/15 px-2.5 py-1.5 text-[10px] font-bold text-[#dcebe4] hover:bg-white/10 disabled:opacity-50">{stage.charAt(0) + stage.slice(1).toLowerCase()}</button>)}</div> : null}
+
+        {canAdvanceStage ? <div className="space-y-2 rounded-xl border border-white/15 bg-white/5 p-3">
+          <p className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[.13em] text-[#8fb2a8]"><Truck className="h-3.5 w-3.5" />Mark packed for dispatch</p>
+          <p className="text-[10px] leading-4 text-[#9fc0b5]">The dispatch time shows on the rider's job card — it is separate from the customer's checkout-time delivery slot.</p>
+          <input value={cloud.packedSlotLabel} onChange={(event) => cloud.setPackedSlotLabel(event.target.value)} aria-label="Dispatch slot label" placeholder="Dispatch slot (e.g. Today evening, 6-8pm)" className="w-full rounded-xl border border-white/15 bg-white/10 px-2.5 py-2 text-xs text-white outline-none placeholder:text-[#9fc0b5]" />
+          <input type="datetime-local" value={cloud.packedSlotAt} onChange={(event) => cloud.setPackedSlotAt(event.target.value)} aria-label="Dispatch slot time" className="w-full rounded-xl border border-white/15 bg-white/10 px-2.5 py-2 text-xs text-white outline-none [color-scheme:dark]" />
+          <button type="button" disabled={cloud.pending} onClick={() => cloud.onAdvanceStage('PACKED', { deliverySlotLabel: cloud.packedSlotLabel.trim() || undefined, deliverySlotAt: cloud.packedSlotAt ? new Date(cloud.packedSlotAt).toISOString() : undefined })} className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-white/15 px-3 py-2 text-xs font-bold text-[#dcebe4] hover:bg-white/10 disabled:opacity-50"><PackageCheck className="h-3.5 w-3.5" />Packed</button>
+        </div> : null}
 
         {canReconcile ? <div className="space-y-2 rounded-xl border border-[#8f6fc0]/30 bg-[#6b4e92]/20 p-3"><p className="text-[10px] font-bold uppercase tracking-[.13em] text-[#d6c2f0]">Propose a recount</p><p className="text-[10px] leading-4 text-[#d8cae9]">Requires at least one photo. The marketplace prices the change — you never set an amount here.</p>
           <select aria-label="Order line to adjust" value={cloud.reconLineId} onChange={(event) => cloud.setReconLineId(event.target.value)} className="w-full rounded-xl border border-white/15 bg-[#3a2c52] px-2.5 py-2 text-xs text-white outline-none"><option value="">Select a line</option>{(detail.lines || []).map((line) => <option key={line.orderLineId} value={line.orderLineId}>{line.name} — ordered {line.estimatedQuantity ?? '—'} {line.unit}</option>)}</select>
