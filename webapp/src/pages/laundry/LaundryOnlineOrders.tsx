@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, CalendarClock, Check, ChevronRight, ClipboardCheck, Cloud, History, Inbox, MapPin, PackageCheck, Phone, RefreshCw, Search, SlidersHorizontal, Truck, X } from 'lucide-react'
+import { AlertTriangle, CalendarClock, Check, ChevronRight, CircleOff, ClipboardCheck, Cloud, History, Inbox, MapPin, PackageCheck, Phone, RefreshCw, Search, SlidersHorizontal, Truck, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { apiGet, apiPost, operatorErrorMessage } from '@/lib/api'
+import { Link, useSearchParams } from 'react-router-dom'
+import { ApiError, apiGet, apiPost, operatorErrorMessage } from '@/lib/api'
 import { cn, formatINR } from '@/lib/utils'
 import { canUseUi } from '@/components/laundry/LaundryShell'
 import VisualEmptyState from '@/components/laundry/VisualEmptyState'
@@ -31,6 +31,29 @@ const channelLabel = (channel: string) => channel.replace(/_/g, ' ')
 const text = (value: unknown, fallback = '') => String(value ?? fallback).trim()
 const dateLabel = (value?: string) => value ? new Date(value).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Not scheduled'
 const timeLabel = (value?: string) => value ? new Date(value).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—'
+
+type CloudStatus = { configured: boolean; connected: boolean; remoteVendorName?: string; remoteVendorId?: string; remoteUserRole?: string; phone?: string; connectedAt?: string }
+type CloudActionOutcome = { action: 'accept' | 'reject'; remoteStatus: string; transition: 'applied' | 'already_final'; materialization: string; materializationReason?: string; localOrderId?: string }
+
+/**
+ * Turns a cloud action result into a sentence that says what actually happened
+ * on the marketplace AND what, if anything, is still pending — rather than a
+ * generic "saved".
+ */
+function cloudOutcomeNotice(outcome: CloudActionOutcome) {
+  const settled = outcome.transition === 'already_final'
+    ? `The marketplace already had this order as ${outcome.remoteStatus}.`
+    : `The marketplace confirmed ${outcome.remoteStatus}.`
+  if (outcome.action === 'reject') return `${settled} The customer refund is handled by the marketplace.`
+  switch (outcome.materialization) {
+    case 'created': return `${settled} A local order was created and is now on the floor workflow.`
+    case 'already_materialized': return `${settled} This order was already linked to a local order.`
+    case 'awaiting_intake': return `${settled} It waits in intake until the physical laundry is counted against your catalogue.`
+    case 'awaiting_customer_approval': return `${settled} It waits for the customer to answer the reassessment.`
+    case 'blocked_by_setup': return `${settled} A local order cannot be created yet: ${outcome.materializationReason === 'TAX_PROFILE_INCOMPLETE' ? 'finish the supplier tax profile in settings' : outcome.materializationReason}.`
+    default: return settled
+  }
+}
 
 function deadline(order: OnlineOrder) {
   if (!order.acceptanceDeadline) return { label: 'No deadline', tone: 'muted' as const }
@@ -74,6 +97,7 @@ export default function LaundryOnlineOrders() {
   const canEdit = canUseUi(session.data?.user?.roles, 'orders.edit')
   const queue = useQuery({ queryKey: ['marketplace-online-orders', cursor], queryFn: () => apiGet<QueuePage>(`/marketplace/orders?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`), staleTime: 10_000 })
   const sync = useQuery({ queryKey: ['marketplace-sync-status'], queryFn: () => apiGet<SyncStatus>('/marketplace/sync/status'), staleTime: 10_000 })
+  const cloud = useQuery({ queryKey: ['marketplace-cloud-status'], queryFn: () => apiGet<CloudStatus>('/marketplace/cloud/status'), staleTime: 10_000 })
   const pageItems = queue.data?.items || []
   const orders = cursor ? [...loadedItems, ...pageItems] : pageItems
   const visible = useMemo(() => orders.filter((order) => {
@@ -98,7 +122,33 @@ export default function LaundryOnlineOrders() {
   useEffect(() => { setRejectReason(''); setIntakeLines([]); setNotice(''); setIntakeGarment(''); setIntakeService(''); setIntakeQty('1'); setIntakeBagCount(''); setPickupDate(new Date().toISOString().slice(0, 10)); setPickupWindow(''); setPickupRider('') }, [selected?.id])
 
   const invalidate = () => { void client.invalidateQueries({ queryKey: ['marketplace-online-orders'] }); void client.invalidateQueries({ queryKey: ['marketplace-sync-status'] }); void client.invalidateQueries({ queryKey: ['marketplace-order-truth'] }); void client.invalidateQueries({ queryKey: ['marketplace-customer-status'] }); void client.invalidateQueries({ queryKey: ['marketplace-pickup'] }) }
-  const action = useMutation({ mutationFn: ({ id, kind, reason }: { id: string; kind: 'accept' | 'reject' | 'materialize'; reason?: string }) => kind === 'materialize' ? apiPost(`/marketplace/orders/${encodeURIComponent(id)}/materialize`, {}) : apiPost(`/marketplace/orders/${encodeURIComponent(id)}/${kind}`, kind === 'reject' ? { reason } : {}), onSuccess: (_, variables) => { setNotice(variables.kind === 'accept' ? 'Acceptance recorded locally. Remote completion still depends on sync acknowledgement.' : variables.kind === 'materialize' ? 'The accepted order is now linked to the local operational order.' : 'Rejection recorded with reason.'); invalidate() } })
+  // Accept/reject go to the cloud, which owns the marketplace decision: it is
+  // confirmed there before any local state changes. Materialize stays local —
+  // creating the local operational order is purely a store-side step.
+  const action = useMutation({
+    mutationFn: ({ id, kind, reason }: { id: string; kind: 'accept' | 'reject' | 'materialize'; reason?: string }) =>
+      kind === 'materialize'
+        ? apiPost(`/marketplace/orders/${encodeURIComponent(id)}/materialize`, {})
+        : apiPost<CloudActionOutcome>(`/marketplace/cloud/orders/${encodeURIComponent(id)}/${kind}`, kind === 'reject' ? { reason } : undefined),
+    onSuccess: (result, variables) => {
+      setNotice(variables.kind === 'materialize' ? 'The accepted order is now linked to the local operational order.' : cloudOutcomeNotice(result as CloudActionOutcome))
+      invalidate()
+    },
+    onError: (error) => {
+      // A conflict means another client (Vendor App, platform, auto-reject) got
+      // there first. The queue is refreshed so the corrected remote state is
+      // visible immediately instead of the operator re-clicking a stale button.
+      if (error instanceof ApiError && error.code === 'CLOUD_ORDER_CONFLICT') invalidate()
+    },
+  })
+  const cloudSync = useMutation({
+    mutationFn: () => apiPost<{ pulled: number; created: number; updated: number; skipped: Array<{ externalOrderId: string; reason: string }> }>('/marketplace/cloud/sync-orders', undefined),
+    onSuccess: (result) => {
+      const skipped = result.skipped.length ? ` ${result.skipped.length} could not be read and were skipped.` : ''
+      setNotice(`Pulled ${result.pulled} order${result.pulled === 1 ? '' : 's'} from the marketplace — ${result.created} new, ${result.updated} updated.${skipped}`)
+      invalidate()
+    },
+  })
   const intake = useMutation({ mutationFn: ({ id, actual }: { id: string; actual: Record<string, unknown> }) => apiPost(`/marketplace/orders/${encodeURIComponent(id)}/intake`, actual), onSuccess: () => { setNotice('Physical intake recorded. Review any reassessment before materializing.'); invalidate() } })
   const pickupAction = useMutation({ mutationFn: ({ id, kind }: { id: string; kind: 'schedule' | 'collect' }) => kind === 'schedule' ? apiPost(`/marketplace/orders/${encodeURIComponent(id)}/pickup/schedule`, { scheduledDate: pickupDate, window: pickupWindow || undefined, riderId: pickupRider || undefined }) : apiPost(`/marketplace/orders/${encodeURIComponent(id)}/pickup/outcome`, { state: 'Collected' }), onSuccess: (_, variables) => { setNotice(variables.kind === 'schedule' ? 'Pickup scheduled locally. The outbound command will remain pending until sync is acknowledged.' : 'Pickup collection recorded locally; the order is ready for physical intake.'); invalidate() } })
 
@@ -114,6 +164,14 @@ export default function LaundryOnlineOrders() {
   }
   const loadMore = () => { if (!queue.data?.nextCursor || queue.isFetching) return; setLoadedItems(orders); setCursor(queue.data.nextCursor) }
   const refresh = () => { setCursor(undefined); setLoadedItems([]); void queue.refetch(); void sync.refetch() }
+  // Accepting or rejecting is a marketplace decision, so it needs a connected
+  // account with a linked vendor. Without one there is nothing to decide
+  // against, and the controls say so rather than failing when pressed.
+  const cloudReady = Boolean(cloud.data?.connected && cloud.data?.remoteVendorId)
+  const cloudBlocker = cloud.isLoading || cloudReady ? undefined
+    : !cloud.data?.configured ? 'This installation has no marketplace endpoint configured, so online decisions cannot reach the marketplace.'
+      : !cloud.data.connected ? 'Connect this store to its marketplace account to accept or reject online orders.'
+        : 'The connected account has no vendor linked yet, so marketplace decisions cannot be attributed to a store.'
   const awaiting = orders.filter((order) => order.state === 'AwaitingAcceptance').length
   const needsIntake = orders.filter((order) => order.state === 'IntakeRequired').length
   const needsApproval = orders.filter((order) => order.state === 'CustomerApprovalRequired').length
@@ -121,7 +179,10 @@ export default function LaundryOnlineOrders() {
   return <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
     <header className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
       <div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-[#4d8982]">Marketplace edge · operator cockpit</p><h1 className="mt-1 font-serif text-3xl tracking-[-.02em] text-[#17353c]">Online orders</h1><p className="mt-1 max-w-2xl text-sm leading-6 text-[#718087]">Every request arrives with its source and evidence. Accept the work, receive the physical laundry, then move it into the same floor workflow as a counter order.</p></div>
-      <button type="button" onClick={refresh} className="inline-flex h-10 items-center justify-center gap-2 self-start rounded-xl border border-[#263f44]/15 bg-white px-3 text-xs font-bold text-[#315d57] shadow-sm lg:self-auto"><RefreshCw className={cn('h-3.5 w-3.5', queue.isFetching && 'animate-spin')} />Refresh queue</button>
+      <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto">
+        <button type="button" onClick={refresh} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-[#263f44]/15 bg-white px-3 text-xs font-bold text-[#315d57] shadow-sm"><RefreshCw className={cn('h-3.5 w-3.5', queue.isFetching && 'animate-spin')} />Refresh queue</button>
+        <button type="button" onClick={() => cloudSync.mutate()} disabled={!cloudReady || cloudSync.isPending} aria-label={cloudReady ? 'Pull from marketplace' : 'Pull from marketplace — connect this store to its marketplace account first'} title={cloudReady ? 'Fetch new and updated orders from the marketplace' : 'Connect this store to its marketplace account first'} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#173f46] px-3 text-xs font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-45"><Cloud className={cn('h-3.5 w-3.5', cloudSync.isPending && 'animate-pulse')} />{cloudSync.isPending ? 'Pulling…' : 'Pull from marketplace'}</button>
+      </div>
     </header>
 
     <section className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -129,13 +190,15 @@ export default function LaundryOnlineOrders() {
       <Metric icon={<CalendarClock />} label="Awaiting acceptance" value={String(awaiting)} accent="amber" />
       <Metric icon={<PackageCheck />} label="Intake pending" value={String(needsIntake)} accent="blue" />
       <Metric icon={<ClipboardCheck />} label="Customer approval" value={String(needsApproval)} accent="violet" />
-      <Metric icon={<Cloud />} label="Sync state" value={sync.isError ? 'Unavailable' : sync.data?.configured ? 'Configured' : 'Not configured'} accent={sync.data?.outbox.deadLetter || sync.data?.inbox.held ? 'red' : 'slate'} />
+      <Metric icon={<Cloud />} label="Marketplace account" value={cloud.isError ? 'Unavailable' : cloudReady ? 'Connected' : cloud.data?.connected ? 'No vendor linked' : cloud.data?.configured ? 'Not connected' : 'Not configured'} accent={cloudReady ? 'teal' : cloud.data?.connected ? 'amber' : 'slate'} />
     </section>
 
     <section className="mt-5 rounded-[22px] border border-[#263f44]/10 bg-[#fffdf8] p-3 shadow-[0_10px_30px_rgba(37,48,43,.035)]">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between"><div className="flex items-center gap-2 overflow-x-auto pb-1">{states.map((item) => <button key={item.key} type="button" onClick={() => setFilter(item.key)} className={cn('whitespace-nowrap rounded-full px-3 py-2 text-[11px] font-bold transition-colors', filter === item.key ? 'bg-[#173f46] text-white' : 'text-[#647478] hover:bg-[#edf3f0]')}>{item.label}</button>)}</div><label className="flex h-10 min-w-0 items-center gap-2 rounded-xl border border-[#263f44]/12 bg-white px-3 text-sm text-[#718087] xl:w-72"><Search className="h-4 w-4 shrink-0" /><span className="sr-only">Search online orders</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Order, customer, phone…" className="min-w-0 flex-1 bg-transparent text-sm text-[#27454c] outline-none placeholder:text-[#9ba7a7]" /></label></div>
       {sync.data?.checkpoint?.error ? <div className="mt-3 flex items-start gap-2 rounded-xl bg-[#fff4de] px-3 py-2.5 text-xs font-semibold text-[#805b24]"><AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />Sync needs attention: {sync.data.checkpoint.error}</div> : null}
       {!session.isLoading && !canEdit ? <div className="mt-3 rounded-xl border border-[#263f44]/10 bg-[#edf3f0] px-3 py-2.5 text-xs font-semibold text-[#53676a]">Read-only queue. An owner or counter operator must accept, reject, assess, or materialize marketplace work.</div> : null}
+      {cloudBlocker ? <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-xl border border-[#263f44]/10 bg-[#eef2f0] px-3 py-2.5 text-xs font-semibold text-[#53676a]"><CircleOff className="h-3.5 w-3.5 shrink-0" /><span>{cloudBlocker}</span><Link to="/laundry/sync-status" className="underline decoration-[#39786f]/40 underline-offset-2 hover:text-[#2e6a60]">Open marketplace sync</Link></div> : null}
+      {cloudReady && cloud.data?.remoteVendorName ? <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-[#39786f]/20 bg-[#f3faf6] px-3 py-2.5 text-xs font-semibold text-[#2e6a60]"><Cloud className="h-3.5 w-3.5 shrink-0" />Connected to {cloud.data.remoteVendorName}. Accepting or rejecting is confirmed on the marketplace before it is recorded here.</div> : null}
     </section>
 
     {action.isError || intake.isError ? <div role="alert" className="mt-4 flex items-start gap-2 rounded-xl bg-[#fde9e6] px-3 py-2.5 text-sm text-[#a44036]"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />{operatorErrorMessage(action.error || intake.error, 'The online order action failed. Refresh and try again.')}</div> : null}
@@ -149,7 +212,7 @@ export default function LaundryOnlineOrders() {
       </section>
 
       <aside className="rounded-[22px] border border-[#173f46]/12 bg-[#173f46] text-[#f8faf5] shadow-[0_18px_42px_rgba(23,63,70,.16)]" aria-label="Online order detail">
-        {!selected ? <div className="grid min-h-[420px] place-items-center p-8 text-center"><Inbox className="h-8 w-8 text-[#8fb2a8]" /><p className="mt-3 font-serif text-xl">Select a request</p><p className="mt-1 max-w-xs text-sm leading-6 text-[#b3c8c1]">The work card will keep request, intake, payment, sync, and action evidence together.</p></div> : <OrderDetail canEdit={canEdit} order={selected} truth={truth.data} customerStatus={customerStatus.data} pickup={pickup.data} localOrder={localOrder.data} pickupDate={pickupDate} setPickupDate={setPickupDate} pickupWindow={pickupWindow} setPickupWindow={setPickupWindow} pickupRider={pickupRider} setPickupRider={setPickupRider} catalogue={catalogue.data} intakeLines={intakeLines} setIntakeLines={setIntakeLines} intakeGarment={intakeGarment} setIntakeGarment={setIntakeGarment} intakeService={intakeService} setIntakeService={setIntakeService} intakeQty={intakeQty} setIntakeQty={setIntakeQty} intakeBagCount={intakeBagCount} setIntakeBagCount={setIntakeBagCount} onAddLine={addIntakeLine} onSubmitIntake={submitIntake} actionPending={action.isPending || intake.isPending || pickupAction.isPending} onAccept={() => action.mutate({ id: selected.externalOrderId, kind: 'accept' })} onMaterialize={() => action.mutate({ id: selected.externalOrderId, kind: 'materialize' })} onSchedulePickup={() => pickupAction.mutate({ id: selected.externalOrderId, kind: 'schedule' })} onCollectPickup={() => pickupAction.mutate({ id: selected.externalOrderId, kind: 'collect' })} onReject={() => { if (rejectReason.trim()) action.mutate({ id: selected.externalOrderId, kind: 'reject', reason: rejectReason.trim() }) }} rejectReason={rejectReason} setRejectReason={setRejectReason} />}
+        {!selected ? <div className="grid min-h-[420px] place-items-center p-8 text-center"><Inbox className="h-8 w-8 text-[#8fb2a8]" /><p className="mt-3 font-serif text-xl">Select a request</p><p className="mt-1 max-w-xs text-sm leading-6 text-[#b3c8c1]">The work card will keep request, intake, payment, sync, and action evidence together.</p></div> : <OrderDetail canEdit={canEdit} cloudReady={cloudReady} cloudBlocker={cloudBlocker} order={selected} truth={truth.data} customerStatus={customerStatus.data} pickup={pickup.data} localOrder={localOrder.data} pickupDate={pickupDate} setPickupDate={setPickupDate} pickupWindow={pickupWindow} setPickupWindow={setPickupWindow} pickupRider={pickupRider} setPickupRider={setPickupRider} catalogue={catalogue.data} intakeLines={intakeLines} setIntakeLines={setIntakeLines} intakeGarment={intakeGarment} setIntakeGarment={setIntakeGarment} intakeService={intakeService} setIntakeService={setIntakeService} intakeQty={intakeQty} setIntakeQty={setIntakeQty} intakeBagCount={intakeBagCount} setIntakeBagCount={setIntakeBagCount} onAddLine={addIntakeLine} onSubmitIntake={submitIntake} actionPending={action.isPending || intake.isPending || pickupAction.isPending} onAccept={() => action.mutate({ id: selected.externalOrderId, kind: 'accept' })} onMaterialize={() => action.mutate({ id: selected.externalOrderId, kind: 'materialize' })} onSchedulePickup={() => pickupAction.mutate({ id: selected.externalOrderId, kind: 'schedule' })} onCollectPickup={() => pickupAction.mutate({ id: selected.externalOrderId, kind: 'collect' })} onReject={() => { if (rejectReason.trim()) action.mutate({ id: selected.externalOrderId, kind: 'reject', reason: rejectReason.trim() }) }} rejectReason={rejectReason} setRejectReason={setRejectReason} />}
       </aside>
     </div>
   </div>
@@ -165,7 +228,7 @@ function OrderRow({ order, selected, onSelect }: { order: OnlineOrder; selected:
   return <button type="button" onClick={onSelect} className={cn('group block w-full px-4 py-4 text-left transition-colors hover:bg-[#fbfcf9]', selected ? 'bg-[#eef6f1]' : 'bg-white')}><div className="flex items-start gap-3"><span className={cn('mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full', order.state === 'AwaitingAcceptance' ? 'bg-[#e2a63e]' : order.state === 'CustomerApprovalRequired' ? 'bg-[#8c65c5]' : order.state === 'Rejected' || order.state === 'Cancelled' ? 'bg-[#c45b50]' : 'bg-[#62a796]')} /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-bold text-[#27454c]">{order.orderNumber}</p><span className="rounded-full bg-[#f2f4f1] px-2 py-0.5 text-[9px] font-bold uppercase tracking-[.1em] text-[#718087]">{channelLabel(order.channel)}</span></div><p className="mt-1 truncate text-xs text-[#718087]">{text(order.customer.name, 'Customer')} · {requestLabel(order)}</p><div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-semibold text-[#8a9897]"><span className={cn(due.tone === 'danger' && 'text-[#b14b40]', due.tone === 'warn' && 'text-[#9a6a22]')}>{due.label}</span><span>Updated {timeLabel(order.updatedAt)}</span></div></div><div className="flex shrink-0 flex-col items-end gap-2"><span className={cn('rounded-full px-2 py-1 text-[10px] font-bold', stateTone(order.state))}>{stateLabel(order.state)}</span><ChevronRight className={cn('h-4 w-4 text-[#a8b5b2] transition-transform group-hover:translate-x-0.5', selected && 'text-[#39786f]')} /></div></div></button>
 }
 
-function OrderDetail({ canEdit, order, truth, customerStatus, pickup, localOrder, pickupDate, setPickupDate, pickupWindow, setPickupWindow, pickupRider, setPickupRider, catalogue, intakeLines, setIntakeLines, intakeGarment, setIntakeGarment, intakeService, setIntakeService, intakeQty, setIntakeQty, intakeBagCount, setIntakeBagCount, onAddLine, onSubmitIntake, actionPending, onAccept, onMaterialize, onSchedulePickup, onCollectPickup, onReject, rejectReason, setRejectReason }: { canEdit: boolean; order: OnlineOrder; truth?: Truth; customerStatus?: CustomerStatus; pickup?: PickupTask | null; localOrder?: LocalOrderDetail; pickupDate: string; setPickupDate: (value: string) => void; pickupWindow: string; setPickupWindow: (value: string) => void; pickupRider: string; setPickupRider: (value: string) => void; catalogue?: Catalogue; intakeLines: IntakeLine[]; setIntakeLines: React.Dispatch<React.SetStateAction<IntakeLine[]>>; intakeGarment: string; setIntakeGarment: (value: string) => void; intakeService: string; setIntakeService: (value: string) => void; intakeQty: string; setIntakeQty: (value: string) => void; intakeBagCount: string; setIntakeBagCount: (value: string) => void; onAddLine: () => void; onSubmitIntake: () => void; actionPending: boolean; onAccept: () => void; onMaterialize: () => void; onSchedulePickup: () => void; onCollectPickup: () => void; onReject: () => void; rejectReason: string; setRejectReason: (value: string) => void }) {
+function OrderDetail({ canEdit, cloudReady, cloudBlocker, order, truth, customerStatus, pickup, localOrder, pickupDate, setPickupDate, pickupWindow, setPickupWindow, pickupRider, setPickupRider, catalogue, intakeLines, setIntakeLines, intakeGarment, setIntakeGarment, intakeService, setIntakeService, intakeQty, setIntakeQty, intakeBagCount, setIntakeBagCount, onAddLine, onSubmitIntake, actionPending, onAccept, onMaterialize, onSchedulePickup, onCollectPickup, onReject, rejectReason, setRejectReason }: { canEdit: boolean; cloudReady: boolean; cloudBlocker?: string; order: OnlineOrder; truth?: Truth; customerStatus?: CustomerStatus; pickup?: PickupTask | null; localOrder?: LocalOrderDetail; pickupDate: string; setPickupDate: (value: string) => void; pickupWindow: string; setPickupWindow: (value: string) => void; pickupRider: string; setPickupRider: (value: string) => void; catalogue?: Catalogue; intakeLines: IntakeLine[]; setIntakeLines: React.Dispatch<React.SetStateAction<IntakeLine[]>>; intakeGarment: string; setIntakeGarment: (value: string) => void; intakeService: string; setIntakeService: (value: string) => void; intakeQty: string; setIntakeQty: (value: string) => void; intakeBagCount: string; setIntakeBagCount: (value: string) => void; onAddLine: () => void; onSubmitIntake: () => void; actionPending: boolean; onAccept: () => void; onMaterialize: () => void; onSchedulePickup: () => void; onCollectPickup: () => void; onReject: () => void; rejectReason: string; setRejectReason: (value: string) => void }) {
   const pickupAddress = text(order.pickup.address || order.pickup.pickupAddress, 'Address not shared')
   const customerPhone = text(order.customer.phone || order.customer.mobile)
   const latestReassessment = truth?.reassessments?.at(-1)
@@ -179,7 +242,7 @@ function OrderDetail({ canEdit, order, truth, customerStatus, pickup, localOrder
       {customerStatus ? <CustomerTimeline status={customerStatus} /> : null}
       {order.notes ? <div className="rounded-2xl border border-[#d7c38e]/30 bg-[#5c4d2d]/35 p-3.5 text-xs leading-5 text-[#f4e7c4]"><p className="text-[10px] font-bold uppercase tracking-[.15em] text-[#e8cc8c]">Marketplace notes</p><p className="mt-2 whitespace-pre-wrap">{order.notes}</p></div> : null}
       {latestReassessment ? <div className="rounded-2xl border border-[#8f6fc0]/30 bg-[#6b4e92]/25 p-3.5"><p className="text-[10px] font-bold uppercase tracking-[.15em] text-[#d6c2f0]">Latest reassessment · {latestReassessment.data.state}</p><div className="mt-2 flex items-end justify-between gap-3"><span className="text-xs text-[#d8cae9]">{latestReassessment.data.reason || 'Price changed after intake'}</span><span className="font-bold tabular-nums text-[#f1e5ff]">{formatINR(latestReassessment.data.revisedAmountPaise / 100)}</span></div></div> : null}
-      {order.state === 'AwaitingAcceptance' ? canEdit ? <div className="space-y-2 rounded-2xl border border-[#6ea994]/30 bg-[#286258]/35 p-3.5"><p className="text-[10px] font-bold uppercase tracking-[.15em] text-[#bfe3d3]">Operator decision</p><p className="text-xs leading-5 text-[#d6ebe2]">Accepting records your decision locally and queues the next command for durable sync.</p><div className="flex gap-2"><button type="button" disabled={actionPending} onClick={onAccept} className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#a8ddc6] px-3 py-2.5 text-xs font-bold text-[#173f46] disabled:opacity-50"><Check className="h-3.5 w-3.5" />Accept request</button></div><div className="flex gap-2"><input value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="Reason required to reject" className="min-w-0 flex-1 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs text-white outline-none placeholder:text-[#a9c2ba]" /><button type="button" disabled={actionPending || !rejectReason.trim()} onClick={onReject} className="inline-flex items-center gap-1.5 rounded-xl border border-[#f0a19a]/35 px-3 py-2 text-xs font-bold text-[#ffd3ce] disabled:opacity-40"><X className="h-3.5 w-3.5" />Reject</button></div></div> : <ReadOnlyNotice message="Acceptance and rejection require order-edit access." /> : null}
+      {order.state === 'AwaitingAcceptance' ? canEdit ? <div className="space-y-2 rounded-2xl border border-[#6ea994]/30 bg-[#286258]/35 p-3.5"><p className="text-[10px] font-bold uppercase tracking-[.15em] text-[#bfe3d3]">Operator decision</p><p className="text-xs leading-5 text-[#d6ebe2]">{cloudReady ? 'Your decision is confirmed on the marketplace first, then recorded here. Rejecting triggers the customer refund.' : 'Marketplace decisions are unavailable right now, so these controls cannot be used.'}</p>{cloudBlocker ? <p className="rounded-xl bg-white/10 px-3 py-2 text-xs leading-5 text-[#ffe0b8]">{cloudBlocker}</p> : null}<div className="flex gap-2"><button type="button" disabled={actionPending || !cloudReady} onClick={onAccept} className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#a8ddc6] px-3 py-2.5 text-xs font-bold text-[#173f46] disabled:opacity-50"><Check className="h-3.5 w-3.5" />Accept request</button></div><div className="flex gap-2"><input value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} disabled={!cloudReady} placeholder="Reason required to reject" className="min-w-0 flex-1 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs text-white outline-none placeholder:text-[#a9c2ba]" /><button type="button" disabled={actionPending || !cloudReady || !rejectReason.trim()} onClick={onReject} className="inline-flex items-center gap-1.5 rounded-xl border border-[#f0a19a]/35 px-3 py-2 text-xs font-bold text-[#ffd3ce] disabled:opacity-40"><X className="h-3.5 w-3.5" />Reject</button></div></div> : <ReadOnlyNotice message="Acceptance and rejection require order-edit access." /> : null}
       {order.state === 'IntakeRequired' && !order.localOrderId ? canEdit ? <IntakePanel catalogue={catalogue} lines={intakeLines} setLines={setIntakeLines} garment={intakeGarment} setGarment={setIntakeGarment} service={intakeService} setService={setIntakeService} qty={intakeQty} setQty={setIntakeQty} bags={intakeBagCount} setBags={setIntakeBagCount} onAdd={onAddLine} onSubmit={onSubmitIntake} pending={actionPending} /> : <ReadOnlyNotice message="Physical intake and materialization require order-edit access." /> : null}
       {canEdit && order.state === 'IntakeRequired' && truth?.intake && !order.localOrderId ? <button type="button" disabled={actionPending} onClick={onMaterialize} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#a8ddc6] px-3 py-2.5 text-xs font-bold text-[#173f46] disabled:opacity-50"><Truck className="h-3.5 w-3.5" />Materialize local order</button> : null}
       <div className="flex items-center justify-between border-t border-white/10 pt-3 text-[10px] text-[#9fc0b5]"><span>Sync {order.syncState}</span><span>Updated {timeLabel(order.updatedAt)}</span></div>

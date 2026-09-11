@@ -297,6 +297,61 @@ to `Rejected` at `sourceVersion: 2`. Also live-verified: a real accept moving
 a real order to `VENDOR_ACCEPTED`, a safe repeat accept, a real reject with
 reason, and the mandatory-reason guard returning 400.
 
+## 4d. The operator surface — and a dead-button discovery (2026-09-11)
+
+Everything above was server-side until this point. Two existing pages were
+extended rather than adding parallel screens:
+
+**Marketplace sync** gained a "Marketplace account" panel: sign in with the
+phone number registered to the laundry, receive the real OTP, connect, and see
+which vendor the store is attributed to (vendor id, account role, connected
+time), plus disconnect. It is owner-only in the UI, matching the
+`settings.manage` guard the routes already enforce server-side. The existing
+device/outbox section was relabelled "Edge event ledger" — it previously
+announced "Local standalone · marketplace not configured", which would now be
+actively misleading for a store that IS connected through the account panel.
+The two concepts are now visibly distinct rather than one overloaded
+"connection state".
+
+**Online orders** gained a "Pull from marketplace" action, a connected-account
+banner, and cloud-routed accept/reject. Outcomes are reported as what actually
+happened — e.g. *"The marketplace confirmed VENDOR_ACCEPTED. A local order
+cannot be created yet: finish the supplier tax profile in settings."* — rather
+than a generic "saved". A conflict shows the real remote status and refreshes
+the queue so the corrected state is immediately visible.
+
+**The discovery: the existing Accept/Reject buttons were dead.** They posted to
+the local `/api/marketplace/orders/:id/accept|reject` routes, which run through
+`actOnMarketplaceOrder` → `requireRegisteredDevice`. Probing the real HTTP API
+proved the chain is impossible to satisfy: `PUT /api/marketplace/device` with
+`status: 'Registered'` returns **409 DEVICE_ACTIVATION_REQUIRED**, and the
+accept/reject routes therefore return **400 SYNC_NOT_CONFIGURED** — every time,
+in any real deployment. (Existing tests pass only because they call
+`registerMarketplaceDevice` directly in-process, bypassing the route's block.)
+Those buttons could never have worked for an operator. They now call the cloud
+routes, and when no marketplace account is connected they are disabled with the
+specific reason and a link to the connect panel, instead of failing when
+pressed.
+
+**Verified by using it, not by reading it.** Against the real backend and the
+real seeded vendor, in a browser: connected the store through the panel (real
+OTP), pulled 3 real orders (an order stored as `PROCESSING` correctly showing
+as "Processing" — the §4b mapping fix, confirmed again through the UI),
+accepted one and saw the tax-setup message, then rejected an order on the
+backend as a separate client and watched the Desktop accept surface the
+conflict and auto-correct that order to "Rejected". Checked at 1024px with no
+horizontal overflow on either page; the only console error in the whole
+session was the deliberate 409.
+
+**One accessibility fix came out of it:** the pull button set a `title`, which
+overrides the visible text as the accessible name (WCAG 2.5.3 Label in Name) —
+assistive tech would have announced the tooltip instead of "Pull from
+marketplace". Noticed because a find-by-visible-label failed in exactly the way
+a screen-reader user would hit it. Fixed with an `aria-label` that contains the
+visible label in both enabled and disabled states. The repo's a11y audit had
+passed regardless, since it only checks that a name exists, not that it matches
+the label.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple
@@ -314,11 +369,8 @@ reason, and the mandatory-reason guard returning 400.
   or better, reacting to the backend's already-running Socket.IO transport
   instead of polling — is separate, scoped follow-up work. Until then a new
   marketplace order does not appear in Desktop on its own.
-- **No Desktop UI for any of it yet.** Everything in §4a-§4c is server-side
-  API plus tests; the Desktop React app has no screen that calls these routes.
-  Claiming convergence on the strength of working endpoints would be exactly
-  the "a screen must not masquerade as a capability" inversion — so this is
-  recorded as the obvious next piece, not as done.
+- **UI covers connect + pull + accept/reject only** (§4d). Reconciliation,
+  pickup/delivery and settlement surfaces are untouched by this work.
 - Does not touch `edge-sync.ts`'s outbox/inbox at all. That machinery remains
   real, tested, and local-only until a decision is made about whether the
   backend should grow a matching sync protocol (a large, separate proposal)
