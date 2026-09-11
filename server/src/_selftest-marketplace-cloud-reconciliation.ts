@@ -73,6 +73,13 @@ function buildMockFetch(state: MockState): typeof fetch {
       const recon = state.reconciliations.get(order.id);
       return json(200, { success: true, data: {
         ...order, estimated_amount_paise: 28000, payable_amount_paise: state.previousPayablePaise,
+        // Real cross-context evidence, per Lndry_backend@29b8158 — a rider
+        // pickup photo predating any reconciliation, plus whatever this
+        // order's own reconciliation attached (kept in sync with `recon`).
+        evidence: [
+          { photo_url: 'https://cdn.test/pickup-1.jpg', context: 'RIDER_PICKUP', order_line_id: null, is_grouped: false, created_at: '2026-09-14T09:00:00Z', uploaded_by: 'rider-1', uploaded_by_name: 'Ravi Rider' },
+          ...(recon ? recon.photos.map((url: string) => ({ photo_url: url, context: 'VENDOR_RECONCILIATION', order_line_id: null, is_grouped: true, created_at: '2026-09-14T11:00:00Z', uploaded_by: 'user-1', uploaded_by_name: null })) : []),
+        ],
         timeline: [
           { old_status: 'WAITING_VENDOR_CONFIRMATION', new_status: 'VENDOR_ACCEPTED', actor_role: 'VENDOR_OWNER', note: 'Vendor accepted the order', timestamp: '2026-09-14T10:05:00Z' },
           { old_status: 'VENDOR_ACCEPTED', new_status: 'RECEIVED_AT_VENDOR', actor_role: 'VENDOR_OWNER', note: null, timestamp: '2026-09-14T11:00:00Z' },
@@ -217,6 +224,14 @@ try {
   assert.equal(stillPending.json().detail.latestReconciliation.photos.length, 2, 'the evidence attached to the recount is readable back');
   assert.equal(stillPending.json().detail.timeline.length, 2, "the marketplace's own status history comes back, including actors other than this store");
   assert.equal(stillPending.json().detail.timeline[0].actorRole, 'VENDOR_OWNER');
+  // ── Evidence: cross-context history, distinct from the reconciliation-scoped field ──
+  const evidenceDetail = stillPending.json().detail;
+  assert.equal(evidenceDetail.evidence.length, 3, "the full history includes the rider pickup photo AND both photos attached to this recount");
+  assert.equal(evidenceDetail.evidence[0].context, 'RIDER_PICKUP');
+  assert.equal(evidenceDetail.evidence[0].uploadedByName, 'Ravi Rider', "the uploading actor's name is carried through");
+  assert.ok(evidenceDetail.evidence.some((e: any) => e.context === 'VENDOR_RECONCILIATION'), "the recount's own evidence appears in the full history too");
+  assert.equal(evidenceDetail.latestReconciliation.photos.length, 2, "the reconciliation-scoped field stays scoped to just this recount, not the rider pickup photo");
+
 
   // The customer accepts on the marketplace, exactly as their app would.
   state.reconciliations.get(ORDER)!.status = 'ACCEPTED';

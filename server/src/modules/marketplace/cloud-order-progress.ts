@@ -17,14 +17,16 @@ import type { FetchLike } from './cloud-client.js';
  * backend's own computed amounts. Nothing overwrites what the customer asked
  * for, which is what makes the difference explainable afterwards.
  *
- * Evidence, honestly scoped: the backend stores three kinds of order photo
+ * Evidence: the backend stores three kinds of order photo
  * (`order_pickup_photos.context` = RIDER_PICKUP | VENDOR_RECONCILIATION |
- * DELIVERY_PROOF), but the ONLY read path anywhere in it selects them by
- * `order_reconciliation_id`. Rider pickup proof and delivery proof are
- * therefore written and never readable by any client, vendor included. So
- * reconciliation evidence is surfaced here and the rest cannot be — that is a
- * backend capability gap, not something Desktop can paper over by displaying a
- * placeholder.
+ * DELIVERY_PROOF). Until 2026-09-11 the only read path anywhere in the
+ * backend selected them by `order_reconciliation_id`, so rider pickup proof
+ * and delivery proof were written and never readable by any client, vendor
+ * included — fixed backend-side (`Lndry_backend@29b8158`) by adding one
+ * order-scoped query to the vendor order-detail endpoint, additive and
+ * backward-compatible with the existing reconciliation-scoped field. `detail.evidence`
+ * below is that full, cross-context history; `latestReconciliation.photos`
+ * stays scoped to only the current/latest recount, unchanged.
  */
 
 export type CloudOrderLine = {
@@ -46,11 +48,21 @@ export type CloudReconciliationRecord = {
   previousPayableAmountPaise?: number;
   proposedPayableAmountPaise?: number;
   customerDecisionAt?: string;
-  /** Evidence attached to THIS reconciliation. See the note in the module header on what is not readable. */
+  /** Evidence attached to THIS reconciliation only — a subset of `detail.evidence` below. */
   photos: string[];
 };
 
 export type CloudTimelineEntry = { at: string; oldStatus?: string; newStatus: string; actorRole?: string; note?: string };
+
+/** One photo from the marketplace's full evidence history for an order. */
+export type CloudEvidenceRecord = {
+  url: string;
+  context: 'RIDER_PICKUP' | 'VENDOR_RECONCILIATION' | 'DELIVERY_PROOF' | string;
+  orderLineId?: string;
+  isGrouped: boolean;
+  uploadedByName?: string;
+  createdAt: string;
+};
 
 export type CloudOrderDetail = {
   externalOrderId: string;
@@ -63,6 +75,8 @@ export type CloudOrderDetail = {
   latestReconciliation?: CloudReconciliationRecord;
   /** The marketplace's own status history for this order — every actor, not just this store's. */
   timeline: CloudTimelineEntry[];
+  /** Every photo ever attached to this order, across all three contexts, oldest first. */
+  evidence: CloudEvidenceRecord[];
 };
 
 /**
@@ -158,6 +172,14 @@ export async function fetchCloudOrderDetail(tenant: string, externalOrderId: str
       actorRole: entry.actor_role ? String(entry.actor_role) : undefined,
       note: typeof entry.note === 'string' ? entry.note : undefined,
     })).filter((entry) => entry.newStatus),
+    evidence: (Array.isArray(raw.evidence) ? raw.evidence : []).filter(isRecord).map((photo) => ({
+      url: String(photo.photo_url || ''),
+      context: String(photo.context || 'RIDER_PICKUP'),
+      orderLineId: photo.order_line_id ? String(photo.order_line_id) : undefined,
+      isGrouped: Boolean(photo.is_grouped),
+      uploadedByName: typeof photo.uploaded_by_name === 'string' && photo.uploaded_by_name ? photo.uploaded_by_name : undefined,
+      createdAt: String(photo.created_at || ''),
+    })).filter((photo) => photo.url),
   };
 }
 
@@ -213,12 +235,13 @@ export async function syncCloudOrderDetail(tenant: string, actor: string, extern
     payableAmountPaise: detail.payableAmountPaise ?? null,
     latestReconciliation: detail.latestReconciliation ?? null,
     timeline: detail.timeline,
+    evidence: detail.evidence,
   });
   // This is the only place the customer's answer to a recount reaches Desktop:
   // the list endpoint carries no reconciliation record, so a proposal stays
   // pending locally until someone reads this order's detail again.
   const customerDecision = resolveReassessmentFromRemote(tenant, actor, externalOrderId, detail.latestReconciliation);
-  audit(tenant, actor, 'marketplace:cloud-order-detail-synced', { entity: 'marketplace_order_projection', row_id: saved.id, after: { externalOrderId, remoteStatus: detail.remoteStatus, lineCount: detail.lines.length, reconciliationStatus: detail.latestReconciliation?.status } });
+  audit(tenant, actor, 'marketplace:cloud-order-detail-synced', { entity: 'marketplace_order_projection', row_id: saved.id, after: { externalOrderId, remoteStatus: detail.remoteStatus, lineCount: detail.lines.length, evidenceCount: detail.evidence.length, reconciliationStatus: detail.latestReconciliation?.status } });
   return { detail, projectionState: saved.state, customerDecision };
 }
 

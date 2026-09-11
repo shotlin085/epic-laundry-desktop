@@ -467,6 +467,35 @@ re-reading again decided nothing further. On a second order the customer
 marketplace:customer`, leaving the order needing attention. Throughout, the
 original request stayed immutable and unchanged.
 
+## 4g. Closing the evidence gap — a backend fix, not a workaround (2026-09-11)
+
+§4f recorded rider pickup proof and delivery proof photos as unreadable by
+any client — a real backend gap, not something Desktop could fix on its own
+side. Per the mandate's §83 ("backend changes are allowed when required"),
+fixed it there: `Lndry_backend@29b8158` adds one additional, already
+tenant-scoped query to `VendorOrdersService#getOrder` returning every photo
+ever attached to the order across all three contexts
+(`RIDER_PICKUP`/`VENDOR_RECONCILIATION`/`DELIVERY_PROOF`), with the
+uploader's name joined in.
+
+**Purely additive.** The existing `latestReconciliation.photos` field (scoped
+to only the current/latest recount) is untouched — no existing client's
+response shape changed. No new authorization filter was needed either:
+`orderId` is already resolved against the calling vendor by the main order
+query's `o.vendor_id = $2` check earlier in the same method, which throws 404
+before the new query would ever run for another vendor's order — confirmed
+live with a non-vendor account (403 `NOT_VENDOR`, never reaching the new
+query) and backed by 3 new backend unit tests.
+
+**Desktop wired up to consume it**: `CloudOrderDetail.evidence` (a new,
+typed, cross-context array — url, context, uploader name, timestamp),
+persisted onto the local projection on every detail-sync so it is queryable
+without repeating the sync. Live-verified through the full chain: a real
+order seeded with a real `RIDER_PICKUP` and a real `DELIVERY_PROOF` photo
+came back through Desktop's typed parser with both photos and the uploading
+rider's name, and was still readable from the local projection afterward
+with no further network call.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple
@@ -486,9 +515,9 @@ original request stayed immutable and unchanged.
   carries no reconciliation record, so nothing resolves on its own until
   someone looks. With no background poll yet (above), a decided recount stays
   locally pending until it is next opened.
-- **Rider and delivery evidence cannot be shown at all** — the backend has no
-  read path for them (§4f). This blocks the Evidence Center in mandate §36
-  until a backend endpoint exists.
+- **No Evidence Center UI yet.** The full cross-context evidence history is
+  now readable and persisted (§4g), but no Desktop screen renders it — an
+  operator can only see it via the API today.
 - **No scheduled/background sync.** `pullCloudOrders` only runs when
   `/api/marketplace/cloud/sync-orders` is called. Wiring a recurring poll —
   or better, reacting to the backend's already-running Socket.IO transport
