@@ -475,6 +475,10 @@ export function registerApi(app: FastifyInstance) {
       // state is a precondition the operator can act on, not a bad request.
       // Checked first: the generic fallthrough below would otherwise swallow it.
       if (error.remoteCode === 'INVALID_STAGE' || error.remoteCode === 'INVALID_TRANSITION') return 409;
+      // 401 is the right status here (wrong OTP, or a dead connector token) —
+      // but note the webapp's fetch wrapper (webapp/src/lib/api.ts) must NOT
+      // treat THIS 401 the same as the operator's own Desktop session dying,
+      // since `code: 'CLOUD_AUTH_FAILED'` is how it tells the two apart.
       if (error.code === 'CLOUD_AUTH_FAILED') return 401;
       if (error.code === 'CLOUD_NOT_CONFIGURED') return 409;
       if (error.code === 'CLOUD_TIMEOUT' || error.code === 'CLOUD_UNREACHABLE') return 502;

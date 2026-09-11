@@ -7,6 +7,18 @@ const idempotencyKey = () => crypto.randomUUID();
 const notifyUnauthorized = () => {
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('epic-auth-expired'));
 };
+// A 401 from the marketplace cloud connector (`code: 'CLOUD_AUTH_FAILED'`,
+// e.g. wrong OTP, or a dead connector token the server couldn't refresh)
+// means the REMOTE marketplace session is the thing that's invalid — not
+// the operator's own Desktop login. Treating every 401 the same forced the
+// whole app into "Your session expired, sign in again" over a marketplace
+// hiccup unrelated to the operator's own session (caught live: a stale
+// connector token on the online-orders page logged the operator out of the
+// entire counter workspace, not just the marketplace panel).
+const notifyUnauthorizedUnlessCloud = (body: unknown) => {
+  if (body && typeof body === 'object' && (body as { code?: string }).code === 'CLOUD_AUTH_FAILED') return;
+  notifyUnauthorized();
+};
 
 export type OfflineQueueItem = {
   id: string;
@@ -109,7 +121,7 @@ export async function replayOfflineQueue(options: { force?: boolean } = {}) {
 
 export async function apiGet<T = any>(path: string): Promise<T> {
   const res = await fetch(BASE + path, { credentials: "same-origin" });
-  if (res.status === 401) notifyUnauthorized();
+  if (res.status === 401) notifyUnauthorizedUnlessCloud(await res.clone().json().catch(() => undefined));
   if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
   return res.json();
 }
@@ -123,9 +135,9 @@ export async function apiPost<T = any>(path: string, body?: any, options: Reques
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401) notifyUnauthorized();
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText })) as { error?: string; code?: string; details?: Record<string, unknown> };
+    if (res.status === 401) notifyUnauthorizedUnlessCloud(err);
     throw new ApiError(err.error || `POST ${path} -> ${res.status}`, err.code, err.details);
   }
   return res.json();
@@ -138,9 +150,9 @@ export async function apiPatch<T = any>(path: string, body?: any): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401) notifyUnauthorized();
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText })) as { error?: string; code?: string; details?: Record<string, unknown> };
+    if (res.status === 401) notifyUnauthorizedUnlessCloud(err);
     throw new ApiError(err.error || `PATCH ${path} -> ${res.status}`, err.code, err.details);
   }
   return res.json();
@@ -153,9 +165,9 @@ export async function apiPut<T = any>(path: string, body?: any): Promise<T> {
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey() },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401) notifyUnauthorized();
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText })) as { error?: string; code?: string; details?: Record<string, unknown> };
+    if (res.status === 401) notifyUnauthorizedUnlessCloud(err);
     throw new ApiError(err.error || `PUT ${path} -> ${res.status}`, err.code, err.details);
   }
   return res.json();

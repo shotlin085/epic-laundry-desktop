@@ -51,7 +51,11 @@ function buildMockFetch(state: MockState): typeof fetch {
     }
     if (path === '/auth/refresh-token' && method === 'POST') {
       state.refreshCalls += 1;
-      if (body.refresh_token !== state.refreshToken) return json(401, { success: false, message: 'Invalid refresh token' });
+      // The real backend's refreshTokenSchema requires this body key as
+      // camelCase `refreshToken`, unlike every other endpoint here which
+      // speaks snake_case — confirmed live; asserting it here is what
+      // would have caught the original refresh_token-vs-refreshToken bug.
+      if (body.refreshToken !== state.refreshToken) return json(401, { success: false, message: 'Invalid refresh token' });
       return json(200, { success: true, data: { access_token: state.rotatedAccessToken, refresh_token: state.refreshToken, expires_at: new Date(Date.now() + 900_000).toISOString() } });
     }
     if (path === '/auth/logout' && method === 'POST') {

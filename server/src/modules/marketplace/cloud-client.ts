@@ -118,9 +118,18 @@ export async function verifyOtp(fetchImpl: FetchLike, baseUrl: string, phone: st
   };
 }
 
-/** POST /auth/refresh-token */
+/**
+ * POST /auth/refresh-token. The real backend's refreshTokenSchema requires
+ * the request body key as camelCase `refreshToken` (confirmed against a live
+ * local backend: a `refresh_token` snake_case body 400s with VALIDATION_ERROR
+ * because the field is simply absent from the request as the schema sees
+ * it) — unlike every other endpoint here, which accepts/returns snake_case.
+ * Getting this wrong means every connected session silently breaks the
+ * moment the ~15min access token expires, surfacing as a generic
+ * "Validation error" on whatever action happened to trigger the refresh.
+ */
 export async function refreshAccessToken(fetchImpl: FetchLike, baseUrl: string, refreshToken: string): Promise<CloudTokens> {
-  const body = await callCloud(fetchImpl, baseUrl, '/auth/refresh-token', { method: 'POST', body: { refresh_token: refreshToken } });
+  const body = await callCloud(fetchImpl, baseUrl, '/auth/refresh-token', { method: 'POST', body: { refreshToken } });
   const data = isRecord(body.data) ? body.data : body;
   return {
     accessToken: requireString(data.access_token ?? data.accessToken, 'access_token'),

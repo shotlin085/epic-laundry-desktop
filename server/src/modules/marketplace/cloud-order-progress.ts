@@ -397,5 +397,8 @@ export function cloudProgressErrorHint(error: unknown): string | undefined {
   if (error instanceof CloudClientError && error.remoteCode === 'INVALID_TRANSITION') {
     return 'The marketplace will not move the order to that stage from its current one.';
   }
+  if (error instanceof CloudClientError && error.code === 'CLOUD_AUTH_FAILED') {
+    return 'The marketplace connection has expired. Reconnect it from Marketplace sync.';
+  }
   return undefined;
 }
