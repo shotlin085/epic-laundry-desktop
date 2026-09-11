@@ -496,6 +496,78 @@ came back through Desktop's typed parser with both photos and the uploading
 rider's name, and was still readable from the local projection afterward
 with no further network call.
 
+## 4h. Evidence Center UI, live-verified, and two session-breaking bugs it caught (2026-09-12)
+
+§4g closed the backend evidence-read gap; this slice built the Desktop UI
+that consumes it (`MarketplaceProgressPanel` in `LaundryOnlineOrders.tsx`):
+remote-status card, evidence list (clickable links to the photo URL, context
+label, uploader name, timestamp), recount status card, marketplace timeline,
+stage-advance buttons (`RECEIVED_AT_VENDOR` → `WASHING`/`DRYING`/`IRONING`/
+`PACKED`), and the "propose a recount" form (line select, confirmed quantity,
+photo URLs, reason).
+
+**Live-verified end to end against a real backend + real Postgres**, not
+mocked: seeded a real order with a real `RIDER_PICKUP` photo and a real
+`order_lines` row, then through the actual browser UI: accepted the order,
+marked it received, advanced it through a stage, proposed a recount (real
+line id, real photo URL), and — simulating the customer side with a crafted
+JWT for the test customer's own user id — accepted the recount via the real
+`/orders/:id/reconciliation/accept` endpoint. Desktop's UI picked the
+decision back up correctly: remote status `PROCESSING`, recount card
+`ACCEPTED`, and a real timeline entry attributed to `CUSTOMER` ("Customer
+accepted the vendor's recalculated total") — confirming the §33 invariant
+(customer decision read back from the marketplace's own record, never
+inferred) holds through a real customer action, not just a mocked one.
+
+That verification pass caught two real bugs, both now fixed
+(`epic_crm_shotlin@c1a7daf`):
+
+**Bug 1 — `refreshAccessToken` sent the wrong field name.** It posted
+`{ refresh_token: ... }` (snake_case) to `/auth/refresh-token`, but the real
+backend's `refreshTokenSchema` requires camelCase `refreshToken` — every
+other cloud endpoint here speaks snake_case, which is exactly what made this
+one easy to get wrong by pattern-matching the rest of the file. A body with
+the field simply absent (as the schema sees a differently-named key) 400s
+with the backend's generic `VALIDATION_ERROR`. Effect in practice: a
+connected session works fine for its first ~15 minutes (the access token's
+lifetime), then **every** cloud-authoritative action — accept, reject,
+detail-sync, stage-advance, reconcile, pull — starts failing with a generic
+"Validation error" the instant a 401 triggers the refresh path, with no
+indication the real cause is the refresh call itself. Caught because the
+recount form's submit genuinely failed live, and tracing it required
+restarting the backend with a temporary debug log in its AJV error handler
+to see that the *real* failing request was `/auth/refresh-token`, not
+`/reconcile` — reproduced directly with curl (`refresh_token` → 400
+`VALIDATION_ERROR`; `refreshToken` → 200 with a fresh token pair) before
+fixing the client. The self-test's mock backend had the same wrong field
+name baked into its assertion, so it was self-confirming the bug rather than
+catching it; fixed there too; it now fails against the old code and passes
+against the fix.
+
+**Bug 2 — a marketplace-auth 401 logged the operator out of the whole
+desktop app.** `cloudErrorStatus` correctly maps the connector's own
+`CLOUD_AUTH_FAILED` (wrong OTP, or — per Bug 1 — a refresh that itself
+failed) to HTTP 401 on Desktop's local endpoints. But the webapp's fetch
+wrapper (`webapp/src/lib/api.ts`) treated *any* 401 from *any* endpoint as
+"the operator's own Desktop session expired," dispatching a global
+`epic-auth-expired` event that `AuthGate` turns into "Your session expired,
+sign in again" for the entire app. A dead marketplace connector token —
+which has nothing to do with the operator's own login — was enough to kick
+them out of Counter Desk, Reports, Settings, everything. Caught live: after
+restarting the Desktop server mid-session, the online-orders page's own
+marketplace queries 401'd on the stale connector token and the whole app
+dropped to the sign-in screen, even though `/api/auth/session` confirmed the
+operator's own session was still completely valid. Fixed by having the
+fetch wrapper inspect the error body for `code: 'CLOUD_AUTH_FAILED'` before
+firing the global event (`notifyUnauthorizedUnlessCloud`) — that 401 now
+stays scoped to the marketplace panel that raised it, with a new operator
+hint ("The marketplace connection has expired. Reconnect it from Marketplace
+sync.") via `cloudProgressErrorHint`.
+
+Both fixes are narrow and additive: no endpoint's request/response *shape*
+changed, only the one wrong field name and the one over-broad global-logout
+trigger.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple
