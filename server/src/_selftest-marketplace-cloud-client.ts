@@ -12,7 +12,7 @@ delete process.env.EPIC_MARKETPLACE_CLOUD_API_URL;
 let closeStore: (() => void) | undefined;
 const originalFetch = globalThis.fetch;
 
-type MockState = { otpSent: string[]; validOtp: string; accessToken: string; refreshToken: string; rotatedAccessToken: string; refreshCalls: number; forceProfile401Once: boolean };
+type MockState = { otpSent: string[]; validOtp: string; accessToken: string; refreshToken: string; rotatedAccessToken: string; refreshCalls: number; forceProfile401Once: boolean; vendorLinked: boolean };
 
 function buildMockFetch(state: MockState): typeof fetch {
   return (async (url: string, init: any = {}) => {
@@ -43,7 +43,11 @@ function buildMockFetch(state: MockState): typeof fetch {
         return json(401, { success: false, message: 'Access token expired' });
       }
       if (!auth.includes(state.accessToken) && !auth.includes(state.rotatedAccessToken)) return json(401, { success: false, message: 'Unauthorized' });
-      return json(200, { success: true, data: { businessName: 'Verify Vendor Co', commissionRate: 15 } });
+      if (!state.vendorLinked) return json(404, { success: false, message: 'Vendor profile not found' });
+      // Deliberately a DIFFERENT id than the connecting user's own id
+      // ('vendor-user-001') — this is the real backend's actual shape
+      // (vendors.id, not users.id) and the connector must keep them separate.
+      return json(200, { success: true, data: { id: 'vendor-row-778', name: 'Verify Vendor Co', businessName: 'Verify Vendor Co', commissionRate: 15 } });
     }
     if (path === '/auth/refresh-token' && method === 'POST') {
       state.refreshCalls += 1;
@@ -78,7 +82,7 @@ try {
 
   // ── Configure + mock the real backend ───────────────────────
   process.env.EPIC_MARKETPLACE_CLOUD_API_URL = 'https://fake-lndry-cloud.test/api/v1';
-  const state: MockState = { otpSent: [], validOtp: '123456', accessToken: 'access-token-v1', refreshToken: 'refresh-token-v1', rotatedAccessToken: 'access-token-v2', refreshCalls: 0, forceProfile401Once: false };
+  const state: MockState = { otpSent: [], validOtp: '123456', accessToken: 'access-token-v1', refreshToken: 'refresh-token-v1', rotatedAccessToken: 'access-token-v2', refreshCalls: 0, forceProfile401Once: false, vendorLinked: true };
   (globalThis as any).fetch = buildMockFetch(state);
 
   const statusConfiguredNotConnected = await app.inject({ method: 'GET', url: '/api/marketplace/cloud/status', headers });
@@ -99,9 +103,18 @@ try {
   assert.equal(connected.statusCode, 200);
   assert.equal(connected.json().connected, true);
   assert.equal(connected.json().remoteVendorName, 'Verify Vendor Co');
+  assert.equal(connected.json().remoteVendorId, 'vendor-row-778', 'the real vendor identity (vendors.id) is captured');
+  assert.notEqual(connected.json().remoteVendorId, 'vendor-user-001', 'the vendor id must NEVER be conflated with the connecting user id — they are different backend rows');
+  assert.equal(connected.json().remoteUserRole, 'VENDOR_OWNER');
   assert.equal(connected.json().phone, '9999999999');
   assert.equal(typeof (connected.json() as any).accessToken, 'undefined', 'the access token must never be returned to a caller of this API');
   assert.equal(typeof (connected.json() as any).refreshToken, 'undefined', 'the refresh token must never be returned to a caller of this API');
+
+  // Verify the same separation is durable in storage, not just in the API response.
+  const storedIdentity = store.withStoreScope('CLOUD-CONNECT-API', 'STORE-CLOUD', () => store.getMarketplaceCloudSession('CLOUD-CONNECT-API'));
+  assert.equal(storedIdentity?.remoteVendorId, 'vendor-row-778');
+  assert.equal(storedIdentity?.remoteUserId, 'vendor-user-001');
+  assert.notEqual(storedIdentity?.remoteVendorId, storedIdentity?.remoteUserId, 'vendor identity and connecting-user identity are stored as distinct facts');
 
   // ── At-rest encryption: the stored row must not contain the plaintext tokens ──
   const storedSession = store.withStoreScope('CLOUD-CONNECT-API', 'STORE-CLOUD', () => store.getMarketplaceCloudSession('CLOUD-CONNECT-API'));
@@ -132,6 +145,16 @@ try {
   const afterDisconnectProfile = await app.inject({ method: 'GET', url: '/api/marketplace/cloud/vendor-profile', headers });
   assert.equal(afterDisconnectProfile.statusCode, 409, 'no cached vendor data is servable once disconnected');
   assert.equal(afterDisconnectProfile.json().code, 'CLOUD_NOT_CONNECTED');
+
+  // ── An account with NO linked vendor still connects successfully — a real
+  // state (platform admin, plain customer), not fabricated vendor data ──
+  state.vendorLinked = false;
+  const reconnectedNoVendor = await app.inject({ method: 'POST', url: '/api/marketplace/cloud/connect', headers, payload: { phone: '9999999999', otp: '123456' } });
+  assert.equal(reconnectedNoVendor.statusCode, 200);
+  assert.equal(reconnectedNoVendor.json().connected, true, 'connecting must not require a linked vendor to succeed');
+  assert.equal(reconnectedNoVendor.json().remoteVendorId, undefined, 'no vendor id is fabricated when none is linked');
+  assert.equal(reconnectedNoVendor.json().remoteVendorName, undefined);
+  await app.inject({ method: 'POST', url: '/api/marketplace/cloud/disconnect', headers });
 
   async function getStatus() {
     const res = await app.inject({ method: 'GET', url: '/api/marketplace/cloud/status', headers });

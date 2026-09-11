@@ -26,6 +26,9 @@ export type CloudConnectionStatus = {
   configured: boolean;
   connected: boolean;
   remoteVendorName?: string;
+  /** Present only once a vendor is actually linked — see connectCloudSession's comment on why this is not always set. */
+  remoteVendorId?: string;
+  remoteUserRole?: string;
   phone?: string;
   connectedAt?: string;
 };
@@ -97,8 +100,17 @@ export async function requestCloudOtp(phone: string, fetchImpl: FetchLike = defa
 }
 
 /**
- * Verifies the OTP, fetches the account's own session profile, and persists
- * the token pair (encrypted at rest) plus a redacted connection record.
+ * Verifies the OTP, fetches the account's own session profile, resolves the
+ * REAL linked vendor identity (a separate fact from the connecting user's own
+ * id — see cloud-client.ts's getVendorProfile), and persists the token pair
+ * (encrypted at rest) plus a redacted connection record.
+ *
+ * A connecting account with no linked vendor (e.g. CUSTOMER role, or a
+ * platform admin) still connects successfully — `remoteVendorId` simply stays
+ * empty. Fabricating a vendor identity from the user id would be exactly the
+ * "display-name / wrong-identity matching" mandate's cross-system identity
+ * principle prohibits, so this is a real branch, not an edge case glossed
+ * over.
  *
  * Deliberately does not yet call `select-shop`/`select-role` — multi-shop
  * account selection is a real, separate backend capability this connector
@@ -119,14 +131,17 @@ export async function connectCloudSession(
 
   const tokens = await cloudClient.verifyOtp(fetchImpl, baseUrl, phone, otp);
   const profile = await cloudClient.getSession(fetchImpl, baseUrl, tokens.accessToken);
+  const vendor = await cloudClient.getVendorProfile(fetchImpl, baseUrl, tokens.accessToken);
 
   const now = new Date().toISOString();
   const record: MarketplaceCloudSessionRecord = {
     tenant,
     storeId: '',
     status: 'Connected',
-    remoteVendorId: profile.userId,
-    remoteVendorName: profile.name,
+    remoteVendorId: vendor?.vendorId || '',
+    remoteVendorName: vendor?.vendorName || '',
+    remoteUserId: profile.userId,
+    remoteUserRole: profile.role,
     phone: profile.phone || phone,
     encryptedTokensJson: encryptTokens(tokens),
     tokenExpiresAt: tokens.accessTokenExpiresAt,
@@ -145,7 +160,9 @@ export function getCloudConnectionStatus(tenant: string): CloudConnectionStatus 
   return {
     configured,
     connected: true,
-    remoteVendorName: session.remoteVendorName,
+    remoteVendorName: session.remoteVendorName || undefined,
+    remoteVendorId: session.remoteVendorId || undefined,
+    remoteUserRole: session.remoteUserRole || undefined,
     phone: session.phone,
     connectedAt: session.connectedAt,
   };

@@ -145,6 +145,32 @@ export async function logout(fetchImpl: FetchLike, baseUrl: string, accessToken:
   await callCloud(fetchImpl, baseUrl, '/auth/logout', { method: 'POST', accessToken, body: {} });
 }
 
+export type CloudVendorIdentity = { vendorId: string; vendorName: string };
+
+/**
+ * GET /vendor/profile. The backend resolves this by looking up the vendor
+ * row OWNED BY the connecting user (`vendors.findByUserId`) — its `id` is the
+ * true remote vendor identity (a `vendors` table row), which is a DIFFERENT
+ * fact from the connecting user's own id returned by `/auth/session`. Never
+ * treat those two ids as interchangeable (confirmed by reading
+ * `vendors.service.js#getPublicPreview`, which spreads the raw `vendors` row
+ * — `id`/`name` here are the vendor's, not the user's).
+ *
+ * Returns `null` (not an error) when the connecting account has no linked
+ * vendor — a real, valid state (e.g. a platform-admin-only connection), not a
+ * failure of the connector itself.
+ */
+export async function getVendorProfile(fetchImpl: FetchLike, baseUrl: string, accessToken: string): Promise<CloudVendorIdentity | null> {
+  try {
+    const body = await callCloud(fetchImpl, baseUrl, '/vendor/profile', { accessToken });
+    const data = isRecord(body.data) ? body.data : body;
+    return { vendorId: requireString(data.id, 'id'), vendorName: typeof data.name === 'string' ? data.name : '' };
+  } catch (error) {
+    if (error instanceof CloudClientError && error.httpStatus === 404) return null;
+    throw error;
+  }
+}
+
 /**
  * Generic authenticated GET against any already-mounted backend endpoint,
  * with one automatic refresh-and-retry on a 401. Returns the raw `data`

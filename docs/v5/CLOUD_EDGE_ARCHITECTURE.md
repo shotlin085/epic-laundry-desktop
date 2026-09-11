@@ -118,6 +118,39 @@ shipped without this) and keeps the secret out of the SQLite file itself
 (verified by the self-test), but it does not yet reach OS-keychain-grade
 protection.
 
+## 4a. Cross-system identity split (2026-09-11, same-day follow-up)
+
+Reading the real backend's `vendors.service.js#getPublicPreview` (which
+backs `GET /vendor/profile`) surfaced a real bug in the first version of this
+connector: it resolves the vendor via `findByUserId(userId)` and returns the
+**`vendors` table row** (`vendors.id`), which is architecturally a different
+fact from the connecting **user's** own id (`users.id`, returned by
+`/auth/session`). The first implementation stored the session's `userId` as
+`remoteVendorId` — factually wrong (and exactly the "don't use the wrong
+identity as authority" mistake mandate §22 warns about), even though it
+happened to be "present" for every account, vendor-linked or not.
+
+Fixed: added `cloud-client.ts#getVendorProfile` (calls the real `/vendor/profile`,
+returns `null` — not an error — when the account has no linked vendor, since
+that's a real valid state, not a failure), migration 38 adding
+`remote_user_id`/`remote_user_role` columns distinct from
+`remote_vendor_id`/`remote_vendor_name`, and updated `connectCloudSession` to
+populate both correctly instead of conflating them.
+
+Verified live twice: once confirming the "no vendor linked" branch behaves
+correctly (a CUSTOMER-role test account connects successfully with
+`remoteUserRole: "CUSTOMER"` and no fabricated `remoteVendorId`/
+`remoteVendorName`), and via a mocked self-test scenario asserting a
+deliberately-different mock vendor id (`vendor-row-778`) is never conflated
+with the mock user id (`vendor-user-001`) — both in the API response and in
+the persisted SQLite row. A live test against an actual vendor-owner account
+(to exercise the "vendor found, ids differ" branch against the real backend,
+not just the mock) was not performed — it would require seeding a full real
+vendor application/approval in the local backend, which is unrelated
+plumbing; the mocked assertion plus the code being read directly from the
+real backend's own resolver function is the verification basis for that
+specific branch.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple
