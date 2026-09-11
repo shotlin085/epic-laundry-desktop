@@ -96,6 +96,7 @@ import { completeMarketplacePickup, marketplacePickupTask, scheduleMarketplacePi
 import { connectCloudSession, disconnectCloudSession, fetchConnectedVendorProfile, getCloudConnectionStatus, requestCloudOtp } from './modules/marketplace/cloud-session.js';
 import { CloudClientError } from './modules/marketplace/cloud-client.js';
 import { pullCloudOrders } from './modules/marketplace/cloud-order-sync.js';
+import { acceptCloudOrder, CloudOrderConflictError, rejectCloudOrder } from './modules/marketplace/cloud-order-actions.js';
 import { renderCanonicalTaxInvoice } from './modules/gst/canonical-invoice-print.js';
 import { approveTaxPolicyRule, createTaxPolicyRule, listTaxPolicyRules, retireTaxPolicyRule, saveSupplierTaxProfile, supplierTaxProfile, taxReadiness } from './modules/gst/tax-policy.js';
 import { auditGarmentAssets } from './modules/laundry/garment-assets.js';
@@ -181,6 +182,10 @@ const laundryPrintJobBody = {
 const marketplaceOrderParams = {
   type: 'object', required: ['externalOrderId'],
   properties: { externalOrderId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false,
+} as const;
+const marketplaceCloudRejectBody = {
+  type: 'object', required: ['reason'],
+  properties: { reason: { type: 'string', minLength: 1, maxLength: 500 } }, additionalProperties: false,
 } as const;
 const settlementBatchParams = { type: 'object', required: ['batchId'], properties: { batchId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false } as const;
 const payoutAttemptParams = { type: 'object', required: ['attemptId'], properties: { attemptId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false } as const;
@@ -420,6 +425,11 @@ export function registerApi(app: FastifyInstance) {
     return rep.code(400).send({ error: error instanceof Error ? error.message : String(error || 'laundry operation failed') });
   };
   const cloudErrorStatus = (error: unknown) => {
+    // A losing race against another client is a conflict, not a server fault.
+    if (error instanceof CloudOrderConflictError) return 409;
+    if (error instanceof Error && error.message === 'CLOUD_ORDER_NOT_SYNCED') return 404;
+    if (error instanceof Error && error.message === 'CLOUD_ORDER_REJECT_REASON_REQUIRED') return 400;
+    if (error instanceof Error && error.message === 'CLOUD_ORDER_STATUS_UNREADABLE') return 502;
     if (error instanceof CloudClientError) {
       if (error.code === 'CLOUD_AUTH_FAILED') return 401;
       if (error.code === 'CLOUD_NOT_CONFIGURED') return 409;
@@ -433,6 +443,11 @@ export function registerApi(app: FastifyInstance) {
     return 400;
   };
   const cloudErrorBody = (error: unknown) => {
+    if (error instanceof CloudOrderConflictError) {
+      // The operator needs the remote truth, not just "it failed" — that is
+      // what lets them see the order was taken/rejected elsewhere.
+      return { code: error.code, error: error.message, remoteStatus: error.remoteStatus, attempted: error.attempted };
+    }
     const code = error instanceof CloudClientError ? error.code : (error instanceof Error ? error.message : 'CLOUD_ERROR');
     const message = error instanceof Error ? error.message : String(error || 'Cloud connector operation failed');
     return { code, error: message };
@@ -796,6 +811,16 @@ export function registerApi(app: FastifyInstance) {
   });
   app.post('/api/marketplace/cloud/sync-orders', { preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
     try { return await pullCloudOrders(req.auth!.tenant, req.auth!.actor); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  // Accept/reject go to the cloud first (it owns the marketplace decision) and
+  // only then update local state — see cloud-order-actions.ts.
+  app.post('/api/marketplace/cloud/orders/:externalOrderId/accept', { schema: { params: marketplaceOrderParams }, preHandler: [guard, allow('orders.edit')] }, async (req: any, rep: any) => {
+    try { return await acceptCloudOrder(req.auth!.tenant, req.auth!.actor, req.params.externalOrderId); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/marketplace/cloud/orders/:externalOrderId/reject', { schema: { params: marketplaceOrderParams, body: marketplaceCloudRejectBody }, preHandler: [guard, allow('orders.edit')] }, async (req: any, rep: any) => {
+    try { return await rejectCloudOrder(req.auth!.tenant, req.auth!.actor, req.params.externalOrderId, String((req.body as any)?.reason || '')); }
     catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   app.get('/api/marketplace/catalogue/mappings', { schema: { querystring: marketplaceCatalogueQuery }, preHandler: [guard, allow('catalogue.read')] }, async (req: any) =>

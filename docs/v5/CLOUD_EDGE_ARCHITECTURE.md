@@ -221,22 +221,104 @@ was not repeated, since the mock's field names and status values are now
 themselves derived from the live-confirmed real shapes above, not from a
 fresh guess.
 
+## 4c. Cloud-authoritative accept/reject — closing the loop (2026-09-11)
+
+`cloud-order-actions.ts` adds the first OUTBOUND mutations: a Desktop operator
+can accept or reject a real marketplace order, and the real backend is the
+authority on the outcome.
+
+**Cloud-first, not local-first-then-push.** Accepting or rejecting is a
+coordination fact the customer, the rider and the platform all depend on, so
+the remote transition is attempted FIRST and local state is written only once
+the remote answer is known. If the cloud is unreachable, local state is left
+completely untouched — there is deliberately no optimistic "Accepted" that the
+customer's app never agreed to (covered by a test that asserts both the state
+and the unchanged `sourceVersion` after a simulated network failure). Because
+the cloud confirms before the local write, the resulting projection is marked
+`syncState: 'Current'`, not the `'PendingOutbound'` the local-only path has to
+use.
+
+**Retry safety and conflict detection — two different things, told apart by
+re-reading the remote.** The backend guards both actions with `SELECT ... FOR
+UPDATE` + `validateTransition`, answering the single code `INVALID_TRANSITION`
+for anything it won't move. That one code can mean "already in an equivalent
+terminal state" (benign) or "moved somewhere incompatible" (a real conflict),
+so on that code the order is re-read and the outcome classified honestly
+rather than guessed from the message text:
+
+- `transition: 'applied'` — the remote accepted the call.
+- `transition: 'already_final'` — the remote refused, and a re-read showed it
+  was already where the operator wanted it (e.g. rejecting an order the
+  platform had already `AUTO_REJECTED`).
+- `CloudOrderConflictError` → HTTP **409**, carrying the real `remoteStatus`
+  and what was `attempted`, AND correcting the local projection to the remote
+  truth first — so the operator's next look shows what actually happened
+  instead of the stale state they acted on.
+
+**A live behavioural discovery corrected a misleading field.** The first
+version reported a boolean `converged`, implying Desktop could tell a fresh
+transition from an idempotent repeat. Reading `src/utils/state-machine.js` and
+confirming against a live backend showed `validateTransition` treats a
+same-status transition as an explicitly VALID no-op, and its success response
+is byte-identical either way — so a repeat accept returns plain success, and
+the boolean was asserting knowledge Desktop does not have. Replaced with the
+`transition` enum above, which only claims what is actually determinable
+without paying an extra round trip on every accept. The self-test's mock was
+also corrected to match this real semantics (it had been stricter than
+reality), and `already_final` is now covered via the path that genuinely
+produces it on the real backend.
+
+**Materialization deferral is classified by what someone must DO about it.**
+After a successful accept, the existing `materializeMarketplaceOrder` bridge
+runs to create a real local laundry order. It frequently, legitimately
+refuses, and those refusals are no longer one undifferentiated bucket:
+`awaiting_intake` (no locally-resolvable garment/service ids, or no delivery
+date — resolved when the bags arrive and are counted),
+`awaiting_customer_approval` (a reassessment the customer must answer),
+`blocked_by_setup` (the store's supplier tax profile is incomplete — nothing
+can be invoiced until the owner fixes settings). A live accept against a fresh
+store surfaced exactly this last case, which is how the distinction came to be
+drawn: "go finish your tax profile" is a completely different instruction from
+"wait for the bags". Any refusal reason NOT in the known set is re-thrown
+rather than absorbed into a tidy-looking outcome. Critically, none of these
+ever roll back or misreport the accept — it genuinely happened remotely.
+
+Rejection requires a non-empty reason (enforced server-side in Desktop, not
+just in a form) because rejecting queues a **real customer refund** on the
+backend, and the reason is verified to actually reach the cloud, not just the
+local note.
+
+**Live-verified end to end** against the real seeded vendor, including the
+hardest case: Desktop synced an order as `AwaitingAcceptance`; a separate
+client rejected it directly on the real backend (exactly what the Vendor App
+would do); Desktop's accept then returned HTTP 409 with
+`remoteStatus: VENDOR_REJECTED`, and Desktop's local projection was corrected
+to `Rejected` at `sourceVersion: 2`. Also live-verified: a real accept moving
+a real order to `VENDOR_ACCEPTED`, a safe repeat accept, a real reject with
+reason, and the mandatory-reason guard returning 400.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple
   vendors/roles connects with whatever default scope `verify-otp` grants.
   Real, scoped follow-up work, not a silent gap.
-- **Orders only, read/pull only, on-demand only, as of §4b.** Real vendor
-  orders now do materialize into `marketplace_order_projections` — but:
-  catalogue, availability, capacity/slots, and settlement still have no real
-  backend data flowing in at all (only orders were scoped for this pass).
-  There is no outbound push (accepting/rejecting an order locally does not
-  yet call the real backend's `/vendor/orders/:id/accept` etc. — pulled
-  orders are currently read-only in Desktop). And there is no
-  scheduled/background polling — `pullCloudOrders` only runs when the
-  `/api/marketplace/cloud/sync-orders` route is called; wiring a recurring
-  poll (or, better, reacting to the backend's already-running Socket.IO
-  transport instead of polling) is separate, real, scoped follow-up work.
+- **Orders only, and only accept/reject outbound.** Real vendor orders pull in
+  (§4b) and accept/reject go out (§4c) — but catalogue, availability,
+  capacity/slots and settlement still have no real backend data flowing either
+  direction. The remaining vendor-order mutations the backend exposes
+  (`/processing-stage`, `/reconcile`) are not wired yet, so a Desktop operator
+  advancing production locally does not yet move the customer-visible stage on
+  the marketplace.
+- **No scheduled/background sync.** `pullCloudOrders` only runs when
+  `/api/marketplace/cloud/sync-orders` is called. Wiring a recurring poll —
+  or better, reacting to the backend's already-running Socket.IO transport
+  instead of polling — is separate, scoped follow-up work. Until then a new
+  marketplace order does not appear in Desktop on its own.
+- **No Desktop UI for any of it yet.** Everything in §4a-§4c is server-side
+  API plus tests; the Desktop React app has no screen that calls these routes.
+  Claiming convergence on the strength of working endpoints would be exactly
+  the "a screen must not masquerade as a capability" inversion — so this is
+  recorded as the obvious next piece, not as done.
 - Does not touch `edge-sync.ts`'s outbox/inbox at all. That machinery remains
   real, tested, and local-only until a decision is made about whether the
   backend should grow a matching sync protocol (a large, separate proposal)

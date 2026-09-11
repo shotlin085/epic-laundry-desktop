@@ -196,13 +196,25 @@ export async function disconnectCloudSession(tenant: string, fetchImpl: FetchLik
  * (e.g. cloud-order-sync.ts) can build on it without duplicating it.
  */
 export async function callConnectedCloudApi(tenant: string, path: string, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  const { baseUrl, tokens, onRefreshed } = connectedCloudCall(tenant);
+  return cloudClient.authenticatedGet(fetchImpl, baseUrl, path, tokens, onRefreshed);
+}
+
+/** POST counterpart of `callConnectedCloudApi` — see authenticatedPost's note on why retrying these is safe. */
+export async function postConnectedCloudApi(tenant: string, path: string, body: unknown, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  const { baseUrl, tokens, onRefreshed } = connectedCloudCall(tenant);
+  return cloudClient.authenticatedPost(fetchImpl, baseUrl, path, tokens, body, onRefreshed);
+}
+
+function connectedCloudCall(tenant: string) {
   const baseUrl = requireConfigured();
   const session = store.getMarketplaceCloudSession(tenant);
   if (!session || session.status !== 'Connected') throw new Error('CLOUD_NOT_CONNECTED');
   const tokens = decryptTokens(session.encryptedTokensJson);
-  return cloudClient.authenticatedGet(fetchImpl, baseUrl, path, tokens, (refreshed) => {
+  const onRefreshed = (refreshed: CloudTokens) => {
     store.saveMarketplaceCloudSession({ ...session, encryptedTokensJson: encryptTokens(refreshed), tokenExpiresAt: refreshed.accessTokenExpiresAt, updatedAt: new Date().toISOString() });
-  });
+  };
+  return { baseUrl, tokens, onRefreshed };
 }
 
 /**

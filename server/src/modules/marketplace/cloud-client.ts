@@ -22,10 +22,19 @@ export type CloudClientErrorCode =
 export class CloudClientError extends Error {
   code: CloudClientErrorCode;
   httpStatus?: number;
-  constructor(code: CloudClientErrorCode, message: string, httpStatus?: number) {
+  /**
+   * The backend's OWN error code from the response body (e.g.
+   * 'INVALID_TRANSITION', 'ORDER_NOT_FOUND', 'NOT_VENDOR'). Preserved
+   * separately from our transport-level `code` because callers that act on
+   * remote state machines must branch on the remote's precise reason — string
+   * matching an error message is not a contract.
+   */
+  remoteCode?: string;
+  constructor(code: CloudClientErrorCode, message: string, httpStatus?: number, remoteCode?: string) {
     super(message);
     this.code = code;
     this.httpStatus = httpStatus;
+    this.remoteCode = remoteCode;
   }
 }
 
@@ -76,13 +85,14 @@ async function callCloud(
   if (!isRecord(body)) {
     throw new CloudClientError('CLOUD_UNEXPECTED_RESPONSE', `LNDRY cloud returned an unexpected response shape from ${path}`, response.status);
   }
+  const remoteCode = typeof body.code === 'string' ? body.code : undefined;
   if (response.status === 401 || response.status === 403) {
     const message = typeof body.message === 'string' ? body.message : 'Authentication failed';
-    throw new CloudClientError('CLOUD_AUTH_FAILED', message, response.status);
+    throw new CloudClientError('CLOUD_AUTH_FAILED', message, response.status, remoteCode);
   }
   if (response.status < 200 || response.status >= 300 || body.success === false) {
     const message = typeof body.message === 'string' ? body.message : `LNDRY cloud request to ${path} failed with status ${response.status}`;
-    throw new CloudClientError('CLOUD_UNEXPECTED_RESPONSE', message, response.status);
+    throw new CloudClientError('CLOUD_UNEXPECTED_RESPONSE', message, response.status, remoteCode);
   }
   return body;
 }
@@ -185,14 +195,51 @@ export async function authenticatedGet(
   tokens: CloudTokens,
   onRefreshed?: (tokens: CloudTokens) => void,
 ): Promise<unknown> {
+  return authenticatedRequest(fetchImpl, baseUrl, path, tokens, { method: 'GET' }, onRefreshed);
+}
+
+/**
+ * Authenticated POST with the same one-shot refresh-and-retry as the GET path.
+ *
+ * Retrying a mutation is only safe because the only mutations routed through
+ * here are ones the backend guards with its own state machine + row lock
+ * (`SELECT ... FOR UPDATE` + `validateTransition`), so a retried call that
+ * already took effect is rejected as an invalid transition rather than applied
+ * twice. Do NOT route a non-idempotent, unguarded mutation through this
+ * helper without revisiting that reasoning.
+ */
+export async function authenticatedPost(
+  fetchImpl: FetchLike,
+  baseUrl: string,
+  path: string,
+  tokens: CloudTokens,
+  body?: unknown,
+  onRefreshed?: (tokens: CloudTokens) => void,
+): Promise<unknown> {
+  return authenticatedRequest(fetchImpl, baseUrl, path, tokens, { method: 'POST', body: body ?? {} }, onRefreshed);
+}
+
+async function authenticatedRequest(
+  fetchImpl: FetchLike,
+  baseUrl: string,
+  path: string,
+  tokens: CloudTokens,
+  opts: { method: string; body?: unknown },
+  onRefreshed?: (tokens: CloudTokens) => void,
+): Promise<unknown> {
   try {
-    const body = await callCloud(fetchImpl, baseUrl, path, { accessToken: tokens.accessToken });
+    const body = await callCloud(fetchImpl, baseUrl, path, { ...opts, accessToken: tokens.accessToken });
     return body.data ?? body;
   } catch (error) {
-    if (error instanceof CloudClientError && error.code === 'CLOUD_AUTH_FAILED') {
+    // Only an EXPIRED token (401) is worth refreshing. A 403 means the
+    // account is authenticated but not permitted (e.g. the backend's
+    // NOT_VENDOR / rider-blocked guards) — a new access token carries the
+    // same permissions, so retrying would just burn a round trip and
+    // obscure the real reason.
+    if (error instanceof CloudClientError && error.httpStatus === 401) {
       const refreshed = await refreshAccessToken(fetchImpl, baseUrl, tokens.refreshToken);
       onRefreshed?.(refreshed);
-      const body = await callCloud(fetchImpl, baseUrl, path, { accessToken: refreshed.accessToken });
+      const body = await callCloud(fetchImpl, baseUrl, path, { ...opts, accessToken: refreshed.accessToken });
       return body.data ?? body;
     }
     throw error;
