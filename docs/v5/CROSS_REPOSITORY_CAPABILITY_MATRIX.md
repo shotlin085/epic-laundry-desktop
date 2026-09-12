@@ -379,6 +379,21 @@ ready for whichever direction is chosen.
 Committed locally (`Lndry_backend`, uncommitted as of this writing — commit
 pending alongside this doc update), **not pushed**.
 
+### 5b. Full cross-repository E2E lifecycle test (2026-09-12)
+
+A real order driven end to end — real customer checkout through
+`quotes`/`slot-holds`/`orders/prepare`/`orders`, real Desktop pull/accept/
+processing through the cloud connector (§4d–§4h), real admin rider
+assignment and real rider delivery, real settlement run — caught two
+further real bugs, both fixed: `orders.delivered_at` was never set by the
+real rider-delivery confirmation path (so settlement would silently never
+see a real delivered order), and the settlement service's per-order ledger
+writes had no protection against a retried/re-run settlement job silently
+duplicating every order's ledger entries (reproduced live: two runs left
+the correct total in `shop_financials` but double the rows in
+`shop_transactions`). Full write-up, evidence, and verification steps in
+`docs/v5/CROSS_REPOSITORY_E2E_LIFECYCLE_TEST.md`.
+
 ## 6. Incidental finding worth separate handling
 
 `webapp/src/lib/nav.ts` in Desktop defines an entirely different, generic-ERP
