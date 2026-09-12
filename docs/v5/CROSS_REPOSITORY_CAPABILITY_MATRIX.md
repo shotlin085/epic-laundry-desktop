@@ -379,6 +379,39 @@ ready for whichever direction is chosen.
 Committed locally (`Lndry_backend`, uncommitted as of this writing — commit
 pending alongside this doc update), **not pushed**.
 
+**Resolved (2026-09-12) — option (b) chosen.** Rewrote the `canRead`/
+`canWrite` guards in `shop-garment_rates.routes.js` and the `canRead` guard
+in `shop-financials.routes.js` (plus their service-layer defence-in-depth
+duplicates: `ShopProductsService.authorizeMutation`,
+`ShopFinancialsService.authorizeRead`, and the `_notifyShopStaff` fan-out
+query) to check the real `VENDOR_OWNER`/`VENDOR_STAFF` vocabulary instead —
+matching what `shop-transactions.routes.js` already did correctly. Mapping:
+`shop-garment_rates` allows `VENDOR_OWNER` and `VENDOR_STAFF` for both read
+and write (no real-vocabulary equivalent of a view-only tier exists);
+`shop-financials` allows `VENDOR_OWNER` only, preserving the original
+documented intent that financial visibility is narrower than general shop
+access. Verified live: the real seeded vendor owner (`shopRole: VENDOR_OWNER`,
+no crafted claims) now gets real `200`s from both endpoints, and a `PATCH`
+price update round-trips correctly; a real `VENDOR_STAFF` account gets the
+catalogue endpoint but correctly still `403`s on financials. Full backend
+suite re-run after fixing the ~19 tests whose mocks encoded the old
+vocabulary: zero new failures (same 3 pre-existing, unrelated baseline
+failures). Committed locally, not pushed.
+
+**Still open, deliberately not touched by this fix:** the *nested*
+`shop-garment_rates` routes (`adjust-stock`, `bulk-price-update`, `manual`
+product creation, the stock-movements list, HQ approve/reject) are gated by
+a structurally different mechanism — `requirePermission('vendor_services.*')`,
+which reads `request.user.permissions` hydrated from the
+`vendor_employees.permissions` JSONB column. The real seeded vendor owner's
+row has `permissions: []`, and `permission-check.js` has no role-based
+fallback (empty array → zero permissions, by design). This is the same
+"designed, never activated" category of gap, but it's an empty-data problem
+rather than a vocabulary mismatch, and it's wide — the same mechanism also
+gates `shop-orders`, `shop-reports`, `vendor-employees` (staff management
+itself), several `admin/*` modules, `coupons`, and `audit-logs`. Tracked as
+a separate, future item; not bundled into this fix.
+
 ### 5b. Full cross-repository E2E lifecycle test (2026-09-12)
 
 A real order driven end to end — real customer checkout through

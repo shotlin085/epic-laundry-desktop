@@ -139,6 +139,19 @@ of why this spans more than one module and needs a deliberate decision
 about which role vocabulary the multi-vendor permission layer actually
 uses, not a one-file fix.
 
+**Resolved (2026-09-12).** Rewrote `shop-financials.routes.js`'s `canRead`
+guard (and its service-layer duplicate, `ShopFinancialsService
+.authorizeRead`) to check `shopRole === 'VENDOR_OWNER'` instead of
+`SHOP_ADMIN | SHOP_MANAGER` — owner-only, not owner+staff, preserving the
+original documented intent that financial visibility is narrower than
+general shop access (`VENDOR_STAFF` is the only non-owner role in the real
+vocabulary, so excluding it here is the equivalent of the original "NOT
+SHOP_STAFF or SHOP_VIEWER"). Verified live: the real seeded vendor owner
+(no crafted claims) now gets a real `200` from `GET /api/v1/shop-financials/`.
+Full write-up (mapping rationale, service-layer defence-in-depth fix,
+`shop-garment_rates`'s twin fix, and test updates) in
+`docs/v5/CROSS_REPOSITORY_CAPABILITY_MATRIX.md` §5a.
+
 ## 6. A related, smaller design note — commission effective-dating
 
 Mandate §50 asks for immutable per-order policy snapshots so historical orders
