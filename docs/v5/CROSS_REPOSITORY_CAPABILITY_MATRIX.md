@@ -454,6 +454,73 @@ than assumed: every write route for it is platform-ADMIN-only
 (`vendors.routes.js`'s `/admin/*` prefix) — there is no vendor-facing
 backend endpoint to build a Desktop UI against yet.
 
+### 5d. Platform Control, first slice — real platform-admin login + vendor directory + capacity (2026-09-13)
+
+Phase 3 of the V5.1 5-phase plan. Initial premise going in — that
+`admin/auth/auth.routes.js` was dead, never-mounted code, the same pattern as
+§5a/§5c — was WRONG and corrected during execution, not silently revised:
+trying to mount it a second time in `app.js` hit a real
+`FST_ERR_DUPLICATED_ROUTE` for `POST /api/v1/admin/auth/login`, proving it
+was already registered one level deeper (nested inside
+`admin/admin.routes.js` via `fastify.register(adminAuthRoutes, { prefix:
+'/auth' })`). No backend route-mounting change was needed. The real, much
+narrower gap: zero `users` rows had `platform_role` set, so nobody could
+actually log in. Seeded one real test admin (`role='ADMIN'` AND
+`platform_role='ADMIN'` — both are required; the token's `role` claim comes
+straight from the legacy `users.role` column, not derived from
+`platform_role`, so the older `fastify.authorize(['ADMIN'])` guards and the
+newer `platform_role`-aware ones both need it set).
+
+Confirmed live end-to-end: real login → real signed JWT with a populated
+37-string `permissions` array (`HQ_ROLE_PERMISSIONS['ADMIN']` — unlike
+`vendor_employees.permissions`, which is empty by design, see §5a); real
+`GET /vendors/admin/list` and `GET/PUT /vendors/admin/:id/capacity`; a real
+`VENDOR_OWNER` token gets `403` from all of them.
+
+Built Desktop's side as a THIRD independent connected identity
+(`server/src/modules/marketplace/platform-session.ts`), alongside the local
+operator login and the vendor phone+OTP connector (§5c) — same
+`EPIC_MARKETPLACE_CLOUD_API_URL` backend base, just a different auth surface
+on it, no new config needed. Unlike the vendor connector, this login issues
+no refresh token (confirmed live — the Dashboard relies on httpOnly cookies
+for renewal instead, which doesn't apply here); accepted for v1 as a 24h
+token with a plain re-login on expiry, since platform-admin usage is
+occasional, not the always-on vendor-connector pattern. `cloud-client.ts`'s
+internal `callCloud` request/error-shape helper was exported (no behavior
+change — confirmed via the full `marketplace-cloud-*` self-test suite,
+unaffected) so this second identity could reuse it without duplicating
+retry-free request handling.
+
+New webapp page `LaundryPlatformControl.tsx` (nav entry gated by
+`settings.manage`, same tier as the vendor connector's own connect/
+disconnect and Marketplace Sync — the real security boundary is the
+backend's own ADMIN-only route authorization, not this local gate) — a sign-
+in form, then a real vendor directory and a real capacity view/edit panel.
+Live editing caught one more real API shape mismatch: `GET .../capacity`
+returns the value as `daily_limit`, while `PUT .../capacity`'s body field for
+the same value is `max_orders_per_day` — a real, backend-side asymmetry
+(confirmed by reading `vendors.service.js`), not a mistake to paper over.
+
+Security, all confirmed live: a Desktop operator role without
+`settings.manage` (tested with a real `processing_staff` account) sees no
+nav entry, is blocked client-side by `PermissionGate`, AND gets a real `403`
+from the server on every `/api/platform/*` route — three independent layers,
+not just hidden navigation. A disconnected (or never-connected) tenant gets
+`409 PLATFORM_NOT_CONNECTED` from the vendor/capacity routes rather than any
+data. The one live edit made during verification (a real vendor's
+`operating_hours.max_orders_per_day`, set to 75 to prove the round-trip) was
+reverted directly in Postgres back to its original unset state afterward.
+
+Explicitly deferred to later Phase 3 slices, not dropped: the remaining
+Platform Control domains (marketplace orders oversight, vendor applications
+review, commissions/fees/settlements, promotions, approvals, support,
+exceptions, analytics, configuration, audit) and the Vendor Business
+workspace's own expansion (riders, staff, vendor-facing evidence/photos,
+finance, settlements, ratings, support, performance analytics — several may
+turn out to have no real vendor-facing endpoint yet either, to be confirmed
+live per domain); store-scoped-user restriction, deferred until a domain
+that actually needs store-level (not just vendor-level) granularity exists.
+
 ## 6. Incidental finding worth separate handling
 
 `webapp/src/lib/nav.ts` in Desktop defines an entirely different, generic-ERP

@@ -641,6 +641,74 @@ matching the convention `LaundryOnlineOrders.tsx`'s own date/text inputs
 already use (and which an earlier WCAG fix this session specifically
 established as the right pattern here, not a new one invented for this page).
 
+## 4j. A third connected identity — Platform Control (2026-09-13)
+
+Every prior section in this doc is about ONE connected identity per store:
+a vendor, linked through phone+OTP. §5d of
+`CROSS_REPOSITORY_CAPABILITY_MATRIX.md` adds a second, wholly independent
+kind of connected identity Desktop can hold at the same time — a real
+platform administrator, email+password, against the same backend base URL
+(`EPIC_MARKETPLACE_CLOUD_API_URL`, no new config) but a different auth
+surface (`/admin/auth/*` rather than `/auth/*`). New module:
+`server/src/modules/marketplace/platform-session.ts`.
+
+**Why not reuse `cloud-session.ts`'s `CloudTokens`/`encryptTokens`/
+`decryptTokens` directly.** The real admin login response carries no
+refresh token — only `accessToken` with a 24h expiry (the Dashboard's
+browser client relies on httpOnly cookies for silent renewal instead, which
+doesn't exist for this headless server-to-server client). `CloudTokens` is
+typed to require `refreshToken`, and `authenticatedGet/Post/Patch`'s
+refresh-and-retry wrapper has no meaning without one. Rather than force-fit
+a fake refresh token or add an optional field that would silently lie about
+what this identity can do, `platform-session.ts` has its own `PlatformToken`
+type (`{ accessToken, accessTokenExpiresAt }`) and its own AES-256-GCM
+encrypt/decrypt pair — same primitive, same shared machine-key file as
+`cloud-session.ts` (deliberate: the key file is a machine secret, not scoped
+to one identity), just not the same functions. What IS reused: `cloud-
+client.ts`'s internal `callCloud` request/error-shape helper, now exported,
+since it already does exactly the right thing (timeout, JSON-shape
+validation, 401/403 → `CLOUD_AUTH_FAILED`) independent of any refresh logic.
+
+**No refresh-and-retry, by design, not by omission.** A 401 from a stored
+platform-admin token means the 24h window has passed; the caller must
+reconnect (re-enter the password) rather than silently renewing forever in
+the background. This is an intentional difference from the vendor
+connector, not a gap to close later — platform-admin usage is expected to
+be occasional and interactive (an owner opening Platform Control to check
+something), unlike the always-connected vendor session a store depends on
+continuously.
+
+**Storage**: a new `platform_admin_sessions` table (migration 39 in
+`store.ts`), structurally identical to `marketplace_cloud_sessions` (same
+tenant/store-scoped primary key, same encrypted-blob-plus-redacted-status
+split) but carrying `is_super_admin` and a real `permissions_json` array —
+fields the vendor-session record has no equivalent of, since
+`vendor_employees.permissions` is empty by design (§5a) while the real HQ
+login always returns a populated, meaningful permission set.
+
+**API surface** (`server/src/api.ts`): `POST/GET/POST
+/api/platform/{connect,status,disconnect}` (mirroring the vendor connector's
+own three), plus the first two real Platform Control capabilities —
+`GET /api/platform/vendors` (directory), `GET`/`PUT
+/api/platform/vendors/:vendorId/capacity` — each a thin proxy to the real
+`/vendors/admin/*` routes using the connected platform-admin token. All
+gated by the same `settings.manage` local permission the vendor connector's
+connect/disconnect already uses; the actual security boundary is the real
+backend's own ADMIN-only route authorization underneath, confirmed live (a
+real `VENDOR_OWNER` token gets `403` from all of them) — this local gate
+only controls who may attempt the platform sign-in at all, same division of
+responsibility as everywhere else in this doc.
+
+**One more real API-shape mismatch, caught by live editing**:
+`GET .../capacity` returns the value as `daily_limit`; `PUT .../capacity`'s
+body field for the identical concept is `max_orders_per_day` — confirmed by
+reading `vendors.service.js`'s `adminGetVendorCapacity`/
+`adminSetDailyCapacity` (the value actually lives inside the vendor's
+`operating_hours` JSONB column, under the `max_orders_per_day` key; the GET
+handler just relabels it as `daily_limit` in its response). The webapp page
+initially read the wrong key and always showed an empty field — fixed
+before this was reported as done.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple

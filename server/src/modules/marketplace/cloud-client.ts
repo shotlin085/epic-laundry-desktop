@@ -48,7 +48,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-async function callCloud(
+/**
+ * Exported (not just used internally) so a second, independent connected
+ * identity — e.g. platform-session.ts's admin login, which has no refresh
+ * token and so cannot reuse authenticatedGet/Post/Patch's refresh-and-retry
+ * wrapper — can still reuse this shared request/error-shape plumbing
+ * instead of duplicating it.
+ */
+export async function callCloud(
   fetchImpl: FetchLike,
   baseUrl: string,
   path: string,
