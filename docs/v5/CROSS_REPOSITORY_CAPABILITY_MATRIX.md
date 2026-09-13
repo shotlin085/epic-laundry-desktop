@@ -427,6 +427,33 @@ the correct total in `shop_financials` but double the rows in
 `shop_transactions`). Full write-up, evidence, and verification steps in
 `docs/v5/CROSS_REPOSITORY_E2E_LIFECYCLE_TEST.md`.
 
+### 5c. Desktop catalogue UI, built on §5a's fix (2026-09-13)
+
+Vendor Business convergence, Phase 2 of the V5.1 5-phase plan: a Desktop
+module + webapp page (`cloud-catalogue.ts`,
+`LaundryMarketplaceCatalogue.tsx`) giving a real vendor a real view of their
+marketplace catalogue and the ability to edit price/sale price/cost price/
+low-stock threshold/max order qty/availability/stock — built directly on
+§5a's role-vocabulary fix, which is what made `shop-garment_rates` reachable
+by a real `VENDOR_OWNER`/`VENDOR_STAFF` account in the first place.
+
+Caught three more real bugs in the same live-verification pass (full detail
+in `docs/v5/CLOUD_EDGE_ARCHITECTURE.md` §4i): `connectCloudSession` never
+refreshed the connector's access token immediately after `verify-otp`, so a
+freshly connected session could 403 on every shopRole-gated route for its
+first ~15 minutes (the real `verify-otp` response carries no `shopRole`
+claim — only `refresh-token`'s response does); a `null`→`0` coercion trap
+in a locally-duplicated `num()` helper that would have silently faked a
+"₹0 sale price" for services with none configured (and the identical bug,
+pre-existing, flagged separately for `cloud-order-progress.ts`, not fixed
+here); and the stock-update endpoint's response being shaped differently
+(`{ shopProduct, prev }`) from every other `PATCH` in the module.
+
+"Capacity" (vendor_slots) is explicitly out of scope, confirmed live rather
+than assumed: every write route for it is platform-ADMIN-only
+(`vendors.routes.js`'s `/admin/*` prefix) — there is no vendor-facing
+backend endpoint to build a Desktop UI against yet.
+
 ## 6. Incidental finding worth separate handling
 
 `webapp/src/lib/nav.ts` in Desktop defines an entirely different, generic-ERP

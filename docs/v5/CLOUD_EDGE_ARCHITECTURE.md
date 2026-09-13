@@ -568,14 +568,94 @@ Both fixes are narrow and additive: no endpoint's request/response *shape*
 changed, only the one wrong field name and the one over-broad global-logout
 trigger.
 
+## 4i. Marketplace catalogue — the first write surface beyond orders (2026-09-13)
+
+Built after the real backend's `shop-garment_rates` module (vendor catalogue:
+list/get/price/availability/stock/delete) was fixed and mounted (see
+`CROSS_REPOSITORY_CAPABILITY_MATRIX.md` §5a) — a new Desktop module,
+`cloud-catalogue.ts`, mirroring the exact `cloud-session.ts` plumbing every
+other cloud feature uses, plus a new webapp page
+(`LaundryMarketplaceCatalogue.tsx`). A vendor connected through Desktop can
+now see their real priced marketplace services and edit price/sale price/
+cost price/low-stock threshold/max order qty/availability
+(`PATCH /shop-garment_rates/:id`) and stock quantity separately
+(`PATCH /shop-garment_rates/:id/stock` — a distinct, row-locked real
+endpoint, not folded into the general update).
+
+**Deliberately narrower than the full `shop-garment_rates` surface**: create,
+soft-delete, bulk-price-update, manual product creation, and the HQ approve/
+reject routes are not exposed. Those nested routes are gated by a different,
+still-unresolved mechanism (`requirePermission`, reading an empty
+`permissions` array for every real account today) — see the capability
+matrix's §5a for the full accounting of that separate gap.
+
+**Live-verified against the real backend, not mocked** — and this pass caught
+three more real bugs, all fixed:
+
+1. **`connectCloudSession` never refreshed immediately after `verify-otp`,
+   so the stored connector token could carry no `shopRole` claim for its
+   first ~15 minutes.** The real backend's `verify-otp` response JWT
+   contains only `{ id, phone, role: 'CUSTOMER' }` — `shopId`/`shopRole` are
+   embedded only by a subsequent `/auth/refresh-token` call (confirmed live
+   this session, already noted in §4g's commission-refresh-bug writeup from
+   a different angle). Every `shopRole`-gated route reads the claim straight
+   off the JWT with no DB fallback, so a freshly connected session hit a real
+   `403` the moment it tried anything shopRole-gated — reproduced live (the
+   real vendor owner's connected session 403'd on `GET /shop-garment_rates`
+   immediately after connecting) and confirmed by checking both the Desktop
+   and real-backend request logs side by side. `vendor-orders` and
+   `shop-transactions` never exposed this because nothing in this session had
+   exercised Desktop's *own* connector token against a shopRole-gated route
+   before now — every earlier "shop-transactions works" check in this
+   session used a manually-refreshed token obtained via direct `curl`, not
+   Desktop's actual stored session. Fixed by having `connectCloudSession`
+   refresh once, immediately, before the token is ever persisted.
+2. **A `null` → `0` coercion trap in a locally-duplicated `num()` helper.**
+   `Number(null) === 0` in JS; `sale_price`/`cost_price` are genuinely
+   `NULL` for most real services (confirmed live — "Small Carpet" has
+   `sale_price: null`), so the helper turned "no sale price configured"
+   into a fake "sale price of ₹0" — which would also have pre-filled the
+   edit form with `0` so an unrelated save could silently zero out a real
+   price. Fixed by checking `null`/`undefined` explicitly before coercing.
+   The exact same helper, with the exact same bug, already existed in
+   `cloud-order-progress.ts` (shipped in §4f/§4g) — flagged as a separate
+   follow-up task rather than fixed here, since that file's fields
+   (`confirmedQuantity`, `ratePaise`, reconciliation amounts) need their own
+   live-reachability check against real null-carrying data, not a
+   drive-by edit.
+3. **The stock-update endpoint's response is shaped differently from every
+   other `PATCH` response in this module.** `PATCH /:id` returns the updated
+   row flat; `PATCH /:id/stock` returns `{ shopProduct, prev }` — confirmed
+   live (a real stock save 500'd with `CLOUD_CATALOGUE_UPDATE_UNEXPECTED_RESPONSE`
+   until this was unwrapped correctly). `shopProduct` itself also carries no
+   joined product/category (its query has no `JOIN`, unlike the list
+   endpoint), so the mapped result from a stock save is honestly missing
+   `name`/`categoryName` rather than having them faked — acceptable here
+   since the UI re-fetches the full list on every successful save anyway and
+   never renders the mutation's own return value.
+
+Also fixed in the same pass: the edit form's number inputs relied on an
+implicit accessible name from a wrapping `<label>` + `<span>`, which didn't
+resolve to anything useful in practice — added explicit `aria-label`s,
+matching the convention `LaundryOnlineOrders.tsx`'s own date/text inputs
+already use (and which an earlier WCAG fix this session specifically
+established as the right pattern here, not a new one invented for this page).
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple
   vendors/roles connects with whatever default scope `verify-otp` grants.
   Real, scoped follow-up work, not a silent gap.
-- **Orders only.** Orders now flow both ways (pull, accept/reject, stage,
-  recount) — but catalogue, availability, capacity/slots and settlement still
-  have no real backend data moving in either direction.
+- **Orders and core catalogue, not settlement or capacity.** Orders flow both
+  ways (pull, accept/reject, stage, recount); catalogue (§4i) now flows both
+  ways for price/sale price/cost price/availability/stock/low-stock-
+  threshold/max-order-qty. Settlement has no real backend data moving either
+  direction from Desktop. Capacity/slots has no vendor-facing backend
+  endpoint at all to move data through — confirmed live: every
+  `vendor_slots` write route (`POST/PATCH/DELETE /admin/:id/slots`,
+  `PUT /admin/:id/capacity`) lives under `vendors.routes.js`'s `/admin/*`
+  prefix, platform-ADMIN-only. Not a Desktop gap to close — there is nothing
+  on the real backend yet for a vendor to call.
 - **Evidence upload is an EXTERNAL_BLOCKER locally.** The marketplace's upload
   endpoint is Cloudinary-backed (its only "fallback" is signed → unsigned
   Cloudinary, not a local store), so turning an operator's image file into a
@@ -595,9 +675,10 @@ trigger.
   decided recount or an in-flight rider/delivery status change stays as last
   synced until the operator re-opens that order.
 - **UI covers connect + pull + accept/reject + stage progress + reconciliation
-  + evidence only** (§4d, §4h). Pickup/delivery *assignment* (rider-side,
-  not vendor-side — §4h confirmed the vendor's own actionable surface stops
-  at `PACKED`) and settlement surfaces are untouched by this work.
+  + evidence + catalogue price/availability/stock** (§4d, §4h, §4i).
+  Pickup/delivery *assignment* (rider-side, not vendor-side — §4h confirmed
+  the vendor's own actionable surface stops at `PACKED`) and settlement
+  surfaces are untouched by this work.
 - Does not touch `edge-sync.ts`'s outbox/inbox at all. That machinery remains
   real, tested, and local-only until a decision is made about whether the
   backend should grow a matching sync protocol (a large, separate proposal)
