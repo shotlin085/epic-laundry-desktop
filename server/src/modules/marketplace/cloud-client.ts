@@ -228,6 +228,26 @@ export async function authenticatedPost(
   return authenticatedRequest(fetchImpl, baseUrl, path, tokens, { method: 'POST', body: body ?? {} }, onRefreshed);
 }
 
+/**
+ * Authenticated PATCH with the same one-shot refresh-and-retry as GET/POST.
+ *
+ * Retrying here is safe for a simpler reason than authenticatedPost's: every
+ * PATCH routed through this helper is a plain idempotent field SET (e.g.
+ * shop-garment_rates' price/availability/stock update) rather than a delta
+ * or an append, so re-sending the same body after a token refresh can never
+ * double an effect — it just sets the same fields to the same values again.
+ */
+export async function authenticatedPatch(
+  fetchImpl: FetchLike,
+  baseUrl: string,
+  path: string,
+  tokens: CloudTokens,
+  body?: unknown,
+  onRefreshed?: (tokens: CloudTokens) => void,
+): Promise<unknown> {
+  return authenticatedRequest(fetchImpl, baseUrl, path, tokens, { method: 'PATCH', body: body ?? {} }, onRefreshed);
+}
+
 async function authenticatedRequest(
   fetchImpl: FetchLike,
   baseUrl: string,

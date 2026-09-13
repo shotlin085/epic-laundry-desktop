@@ -20,6 +20,7 @@ const navigation: Array<{ to: string; label: string; icon: typeof LayoutDashboar
   { to: '/laundry/new-order', label: 'Order booking', icon: Plus, permission: 'orders.create' },
   { to: '/laundry/orders', label: 'Store orders & customers', icon: ClipboardList, permission: 'orders.read' },
   { to: '/laundry/online-orders', label: 'Online orders', icon: Cloud, permission: 'orders.read' },
+  { to: '/laundry/marketplace-catalogue', label: 'Marketplace catalogue', icon: Cloud, permission: 'catalogue.read' },
   { to: '/laundry/sync-status', label: 'Marketplace sync', icon: Cloud, permission: 'settings.manage' },
   { to: '/laundry/garment-tracking', label: 'Garment tracking', icon: ScanLine, permission: 'garments.read' },
   { to: '/laundry/production-queue', label: 'Production queue', icon: Wrench, permission: 'production.read' },
@@ -47,7 +48,7 @@ const navigationGroups: Array<{ id: string; label: string; items: typeof navigat
   { id: 'delivery', label: 'Pickup & delivery', items: navigation.filter((item) => ['/laundry/routes', '/laundry/dispatch', '/laundry/settlements'].includes(item.to)) },
   { id: 'finance', label: 'Finance & compliance', items: navigation.filter((item) => ['/laundry/finance', '/laundry/finance/statutory', '/laundry/cash-closing', '/laundry/expenses', '/laundry/settlements'].includes(item.to)) },
   { id: 'programs', label: 'Customer programs', items: navigation.filter((item) => item.to === '/laundry/packages') },
-  { id: 'management', label: 'Business controls', items: navigation.filter((item) => ['/laundry/management', '/laundry/finance-setup', '/laundry/online-orders', '/laundry/sync-status', '/laundry/reports', '/laundry/catalogue', '/laundry/import-prices', '/laundry/import-catalogue', '/laundry/import-customers', '/laundry/settings'].includes(item.to)) },
+  { id: 'management', label: 'Business controls', items: navigation.filter((item) => ['/laundry/management', '/laundry/finance-setup', '/laundry/online-orders', '/laundry/marketplace-catalogue', '/laundry/sync-status', '/laundry/reports', '/laundry/catalogue', '/laundry/import-prices', '/laundry/import-catalogue', '/laundry/import-customers', '/laundry/settings'].includes(item.to)) },
 ]
 
 export type UiPermission = 'orders.read' | 'orders.edit' | 'orders.create' | 'expenses.create' | 'settings.manage' | 'catalogue.read' | 'customers.read' | 'packages.read' | 'garments.read' | 'cash.read' | 'production.read' | 'quality.read' | 'routes.read'

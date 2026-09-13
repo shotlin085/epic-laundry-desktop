@@ -39,6 +39,13 @@ function buildMockFetch(opts: { accessToken: string; vendorLinked: boolean; orde
       if (body.otp !== '123456') return json(401, { success: false, message: 'Invalid OTP' });
       return json(200, { success: true, data: { accessToken: opts.accessToken, refreshToken: 'refresh-1', expires_at: new Date(Date.now() + 900_000).toISOString() } });
     }
+    // connectCloudSession refreshes once immediately after verify-otp (the
+    // real verify-otp token carries no shopRole claim — only refresh-token's
+    // response does) — see cloud-session.ts's connect flow.
+    if (path === '/auth/refresh-token' && method === 'POST') {
+      if (body.refreshToken !== 'refresh-1') return json(401, { success: false, message: 'Invalid refresh token' });
+      return json(200, { success: true, data: { access_token: opts.accessToken, refresh_token: 'refresh-1', expires_at: new Date(Date.now() + 900_000).toISOString() } });
+    }
     if (path === '/auth/session' && method === 'GET') {
       if (!auth.includes(opts.accessToken)) return json(401, { success: false });
       return json(200, { success: true, data: { user: { id: 'user-001', phone: '9999999999', name: 'Order Sync Vendor', role: 'VENDOR_OWNER' } } });

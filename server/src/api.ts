@@ -98,6 +98,7 @@ import { CloudClientError } from './modules/marketplace/cloud-client.js';
 import { pullCloudOrders } from './modules/marketplace/cloud-order-sync.js';
 import { acceptCloudOrder, CloudOrderConflictError, rejectCloudOrder } from './modules/marketplace/cloud-order-actions.js';
 import { advanceCloudOrderStage, CLOUD_ORDER_STAGES, cloudProgressErrorHint, proposeCloudReconciliation, syncCloudOrderDetail, type CloudOrderStage } from './modules/marketplace/cloud-order-progress.js';
+import { fetchCloudCatalogue, updateCloudCatalogueItem, updateCloudCatalogueStock } from './modules/marketplace/cloud-catalogue.js';
 import { renderCanonicalTaxInvoice } from './modules/gst/canonical-invoice-print.js';
 import { approveTaxPolicyRule, createTaxPolicyRule, listTaxPolicyRules, retireTaxPolicyRule, saveSupplierTaxProfile, supplierTaxProfile, taxReadiness } from './modules/gst/tax-policy.js';
 import { auditGarmentAssets } from './modules/laundry/garment-assets.js';
@@ -226,6 +227,25 @@ const marketplaceCloudReconcileBody = {
     confirmedWeightKg: { type: 'number', minimum: 0.1 },
     reason: { type: 'string', maxLength: 500 },
   }, additionalProperties: false,
+} as const;
+const marketplaceCatalogueItemParams = {
+  type: 'object', required: ['itemId'],
+  properties: { itemId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false,
+} as const;
+const marketplaceCloudCatalogueUpdateBody = {
+  type: 'object',
+  properties: {
+    price: { type: 'number', minimum: 0 },
+    salePrice: { type: 'number', minimum: 0 },
+    costPrice: { type: 'number', minimum: 0 },
+    lowStockThreshold: { type: 'integer', minimum: 0 },
+    maxOrderQty: { type: 'integer', minimum: 1 },
+    isAvailable: { type: 'boolean' },
+  }, additionalProperties: false,
+} as const;
+const marketplaceCloudCatalogueStockBody = {
+  type: 'object', required: ['stockQuantity'],
+  properties: { stockQuantity: { type: 'integer', minimum: 0 } }, additionalProperties: false,
 } as const;
 const settlementBatchParams = { type: 'object', required: ['batchId'], properties: { batchId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false } as const;
 const payoutAttemptParams = { type: 'object', required: ['attemptId'], properties: { attemptId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false } as const;
@@ -886,6 +906,21 @@ export function registerApi(app: FastifyInstance) {
   });
   app.post('/api/marketplace/cloud/orders/:externalOrderId/reconcile', { schema: { params: marketplaceOrderParams, body: marketplaceCloudReconcileBody }, preHandler: [guard, allow('orders.edit')] }, async (req: any, rep: any) => {
     try { return await proposeCloudReconciliation(req.auth!.tenant, req.auth!.actor, req.params.externalOrderId, req.body as any); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  // Real marketplace catalogue (vendor_services on the real backend) — see
+  // cloud-catalogue.ts's header for why this is narrower than the full
+  // shop-garment_rates surface (no create/delete/bulk-update here).
+  app.get('/api/marketplace/cloud/catalogue', { preHandler: [guard, allow('catalogue.read')] }, async (req: any, rep: any) => {
+    try { return await fetchCloudCatalogue(req.auth!.tenant); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.patch('/api/marketplace/cloud/catalogue/:itemId', { schema: { params: marketplaceCatalogueItemParams, body: marketplaceCloudCatalogueUpdateBody }, preHandler: [guard, allow('catalogue.manage')] }, async (req: any, rep: any) => {
+    try { return await updateCloudCatalogueItem(req.auth!.tenant, req.params.itemId, req.body as any); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.patch('/api/marketplace/cloud/catalogue/:itemId/stock', { schema: { params: marketplaceCatalogueItemParams, body: marketplaceCloudCatalogueStockBody }, preHandler: [guard, allow('catalogue.manage')] }, async (req: any, rep: any) => {
+    try { return await updateCloudCatalogueStock(req.auth!.tenant, req.params.itemId, (req.body as any).stockQuantity); }
     catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   app.get('/api/marketplace/catalogue/mappings', { schema: { querystring: marketplaceCatalogueQuery }, preHandler: [guard, allow('catalogue.read')] }, async (req: any) =>

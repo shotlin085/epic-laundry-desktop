@@ -129,7 +129,20 @@ export async function connectCloudSession(
   const otp = String(input.otp || '').trim();
   if (!phone || !otp) throw new Error('CLOUD_CONNECT_INPUT_REQUIRED');
 
-  const tokens = await cloudClient.verifyOtp(fetchImpl, baseUrl, phone, otp);
+  // verify-otp's own access token carries only { id, phone, role: 'CUSTOMER' }
+  // — no shopId/shopRole claim. The real backend only embeds those on
+  // /auth/refresh-token's response (confirmed live). Every shopRole-gated
+  // route (shop-garment_rates, shop-financials, shop-transactions, …) reads
+  // shopRole directly off the JWT with no DB fallback, so a freshly
+  // connected session using the raw verify-otp token 403s on all of them
+  // until its first natural 401-triggered refresh happens to occur — which,
+  // for a read-only route a vendor opens right after connecting, may be
+  // never. Refreshing once here immediately, before the token is ever
+  // stored, means the persisted token always carries shopRole from the
+  // start rather than depending on an unrelated future request to backfill
+  // it by accident.
+  const initialTokens = await cloudClient.verifyOtp(fetchImpl, baseUrl, phone, otp);
+  const tokens = await cloudClient.refreshAccessToken(fetchImpl, baseUrl, initialTokens.refreshToken);
   const profile = await cloudClient.getSession(fetchImpl, baseUrl, tokens.accessToken);
   const vendor = await cloudClient.getVendorProfile(fetchImpl, baseUrl, tokens.accessToken);
 
@@ -204,6 +217,12 @@ export async function callConnectedCloudApi(tenant: string, path: string, fetchI
 export async function postConnectedCloudApi(tenant: string, path: string, body: unknown, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
   const { baseUrl, tokens, onRefreshed } = connectedCloudCall(tenant);
   return cloudClient.authenticatedPost(fetchImpl, baseUrl, path, tokens, body, onRefreshed);
+}
+
+/** PATCH counterpart of `callConnectedCloudApi` — see authenticatedPatch's note on why retrying these is safe. */
+export async function patchConnectedCloudApi(tenant: string, path: string, body: unknown, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  const { baseUrl, tokens, onRefreshed } = connectedCloudCall(tenant);
+  return cloudClient.authenticatedPatch(fetchImpl, baseUrl, path, tokens, body, onRefreshed);
 }
 
 function connectedCloudCall(tenant: string) {

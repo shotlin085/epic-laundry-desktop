@@ -36,6 +36,10 @@ function buildMockFetch(state: MockState): typeof fetch {
 
     if (path === '/auth/send-otp' && method === 'POST') return json(200, { success: true });
     if (path === '/auth/verify-otp' && method === 'POST') return json(200, { success: true, data: { accessToken: 'tok', refreshToken: 'ref' } });
+    // connectCloudSession refreshes once immediately after verify-otp (the
+    // real verify-otp token carries no shopRole claim — only refresh-token's
+    // response does) — see cloud-session.ts's connect flow.
+    if (path === '/auth/refresh-token' && method === 'POST') return json(200, { success: true, data: { access_token: 'tok', refresh_token: 'ref' } });
     if (path === '/auth/session' && method === 'GET') return json(200, { success: true, data: { user: { id: 'user-1', phone: '9999999999', name: 'Recon Vendor', role: 'VENDOR_OWNER' } } });
     if (path === '/vendor/profile' && method === 'GET') return json(200, { success: true, data: { id: 'vendor-recon-1', name: 'Recon Vendor' } });
 
