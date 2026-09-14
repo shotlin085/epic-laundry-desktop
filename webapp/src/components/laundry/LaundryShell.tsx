@@ -25,6 +25,7 @@ const navigation: Array<{ to: string; label: string; icon: typeof LayoutDashboar
   { to: '/laundry/platform-control', label: 'Platform Control', icon: ShieldCheck, permission: 'settings.manage' },
   { to: '/laundry/platform-orders', label: 'Platform orders', icon: ShieldCheck, permission: 'settings.manage' },
   { to: '/laundry/platform-audit', label: 'Platform audit trail', icon: BookOpenCheck, permission: 'settings.manage' },
+  { to: '/laundry/platform-finance', label: 'Platform finance', icon: Landmark, permission: 'settings.manage' },
   { to: '/laundry/garment-tracking', label: 'Garment tracking', icon: ScanLine, permission: 'garments.read' },
   { to: '/laundry/production-queue', label: 'Production queue', icon: Wrench, permission: 'production.read' },
   { to: '/laundry/quality-claims', label: 'Quality claims', icon: ShieldCheck, permission: 'quality.read' },
@@ -51,7 +52,7 @@ const navigationGroups: Array<{ id: string; label: string; items: typeof navigat
   { id: 'delivery', label: 'Pickup & delivery', items: navigation.filter((item) => ['/laundry/routes', '/laundry/dispatch', '/laundry/settlements'].includes(item.to)) },
   { id: 'finance', label: 'Finance & compliance', items: navigation.filter((item) => ['/laundry/finance', '/laundry/finance/statutory', '/laundry/cash-closing', '/laundry/expenses', '/laundry/settlements'].includes(item.to)) },
   { id: 'programs', label: 'Customer programs', items: navigation.filter((item) => item.to === '/laundry/packages') },
-  { id: 'management', label: 'Business controls', items: navigation.filter((item) => ['/laundry/management', '/laundry/finance-setup', '/laundry/online-orders', '/laundry/marketplace-catalogue', '/laundry/sync-status', '/laundry/platform-control', '/laundry/platform-orders', '/laundry/platform-audit', '/laundry/reports', '/laundry/catalogue', '/laundry/import-prices', '/laundry/import-catalogue', '/laundry/import-customers', '/laundry/settings'].includes(item.to)) },
+  { id: 'management', label: 'Business controls', items: navigation.filter((item) => ['/laundry/management', '/laundry/finance-setup', '/laundry/online-orders', '/laundry/marketplace-catalogue', '/laundry/sync-status', '/laundry/platform-control', '/laundry/platform-orders', '/laundry/platform-audit', '/laundry/platform-finance', '/laundry/reports', '/laundry/catalogue', '/laundry/import-prices', '/laundry/import-catalogue', '/laundry/import-customers', '/laundry/settings'].includes(item.to)) },
 ]
 
 export type UiPermission = 'orders.read' | 'orders.edit' | 'orders.create' | 'expenses.create' | 'settings.manage' | 'catalogue.read' | 'customers.read' | 'packages.read' | 'garments.read' | 'cash.read' | 'production.read' | 'quality.read' | 'routes.read'

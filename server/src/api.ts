@@ -99,7 +99,7 @@ import { pullCloudOrders } from './modules/marketplace/cloud-order-sync.js';
 import { acceptCloudOrder, CloudOrderConflictError, rejectCloudOrder } from './modules/marketplace/cloud-order-actions.js';
 import { advanceCloudOrderStage, CLOUD_ORDER_STAGES, cloudProgressErrorHint, proposeCloudReconciliation, syncCloudOrderDetail, type CloudOrderStage } from './modules/marketplace/cloud-order-progress.js';
 import { fetchCloudCatalogue, updateCloudCatalogueItem, updateCloudCatalogueStock } from './modules/marketplace/cloud-catalogue.js';
-import { connectPlatformSession, disconnectPlatformSession, getPlatformSessionStatus, callConnectedPlatformApi, getConnectedPlatformOrder, getConnectedPlatformVendor, listConnectedPlatformAuditLogs, listConnectedPlatformOrders, listConnectedPlatformVendors, reviewConnectedPlatformVendor, writeConnectedPlatformApi } from './modules/marketplace/platform-session.js';
+import { connectPlatformSession, disconnectPlatformSession, getPlatformSessionStatus, callConnectedPlatformApi, getConnectedPlatformOrder, getConnectedPlatformVendor, listConnectedPlatformAuditLogs, listConnectedPlatformFinanceVendors, listConnectedPlatformOrders, listConnectedPlatformVendorFinancials, listConnectedPlatformVendorTransactions, listConnectedPlatformVendors, reviewConnectedPlatformVendor, writeConnectedPlatformApi } from './modules/marketplace/platform-session.js';
 import { renderCanonicalTaxInvoice } from './modules/gst/canonical-invoice-print.js';
 import { approveTaxPolicyRule, createTaxPolicyRule, listTaxPolicyRules, retireTaxPolicyRule, saveSupplierTaxProfile, supplierTaxProfile, taxReadiness } from './modules/gst/tax-policy.js';
 import { auditGarmentAssets } from './modules/laundry/garment-assets.js';
@@ -308,6 +308,34 @@ const platformAuditQuery = {
     from: { type: 'string', maxLength: 40 },
     to: { type: 'string', maxLength: 40 },
     page: { type: 'integer', minimum: 1 },
+    limit: { type: 'integer', minimum: 1, maximum: 100 },
+  }, additionalProperties: false,
+} as const;
+const platformFinanceVendorQuery = {
+  type: 'object', properties: {
+    page: { type: 'integer', minimum: 1, maximum: 100000 },
+    limit: { type: 'integer', minimum: 1, maximum: 100 },
+    search: { type: 'string', maxLength: 200 },
+    has_pending_payout: { type: 'boolean' },
+  }, additionalProperties: false,
+} as const;
+const platformFinanceFinancialQuery = {
+  type: 'object', properties: {
+    period_type: { type: 'string', enum: ['DAILY', 'WEEKLY', 'MONTHLY'] },
+    from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+    to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+    payout_status: { type: 'string', enum: ['PENDING', 'PROCESSING', 'PAID', 'HELD'] },
+    page: { type: 'integer', minimum: 1, maximum: 100000 },
+    limit: { type: 'integer', minimum: 1, maximum: 100 },
+  }, additionalProperties: false,
+} as const;
+const platformFinanceTransactionQuery = {
+  type: 'object', properties: {
+    type: { type: 'string', maxLength: 120 },
+    direction: { type: 'string', enum: ['CREDIT', 'DEBIT'] },
+    from: { type: 'string', format: 'date-time' },
+    to: { type: 'string', format: 'date-time' },
+    page: { type: 'integer', minimum: 1, maximum: 100000 },
     limit: { type: 'integer', minimum: 1, maximum: 100 },
   }, additionalProperties: false,
 } as const;
@@ -1049,6 +1077,21 @@ export function registerApi(app: FastifyInstance) {
   // a read-only observation surface; local Desktop audit remains separate.
   app.get('/api/platform/audit-logs', { schema: { querystring: platformAuditQuery }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
     try { return await listConnectedPlatformAuditLogs(req.auth!.tenant, req.query || {}); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  // Finance oversight is read-only and cloud-authoritative. In particular,
+  // no bank field, payout release, or manual-paid shortcut is bridged into
+  // Desktop: a provider-evidenced payout workflow is still required.
+  app.get('/api/platform/finance/vendors', { schema: { querystring: platformFinanceVendorQuery }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await listConnectedPlatformFinanceVendors(req.auth!.tenant, req.query || {}); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.get('/api/platform/finance/vendors/:vendorId/financials', { schema: { params: platformVendorParams, querystring: platformFinanceFinancialQuery }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await listConnectedPlatformVendorFinancials(req.auth!.tenant, req.params.vendorId, req.query || {}); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.get('/api/platform/finance/vendors/:vendorId/transactions', { schema: { params: platformVendorParams, querystring: platformFinanceTransactionQuery }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await listConnectedPlatformVendorTransactions(req.auth!.tenant, req.params.vendorId, req.query || {}); }
     catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   app.get('/api/marketplace/catalogue/mappings', { schema: { querystring: marketplaceCatalogueQuery }, preHandler: [guard, allow('catalogue.read')] }, async (req: any) =>

@@ -85,6 +85,34 @@ export type PlatformAuditListFilters = {
   limit?: number;
 };
 
+/** Read-only platform-finance filters. These deliberately match the real
+ * HQ finance endpoints; no Desktop-specific payout state or calculation is
+ * introduced at the edge. */
+export type PlatformFinanceVendorListFilters = {
+  page?: number;
+  limit?: number;
+  search?: string;
+  has_pending_payout?: boolean;
+};
+
+export type PlatformFinanceFinancialFilters = {
+  period_type?: 'DAILY' | 'WEEKLY' | 'MONTHLY';
+  from?: string;
+  to?: string;
+  payout_status?: 'PENDING' | 'PROCESSING' | 'PAID' | 'HELD';
+  page?: number;
+  limit?: number;
+};
+
+export type PlatformFinanceTransactionFilters = {
+  type?: string;
+  direction?: 'CREDIT' | 'DEBIT';
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+};
+
 function cloudApiBaseUrl(): string | undefined {
   const value = String(process.env.EPIC_MARKETPLACE_CLOUD_API_URL || '').trim();
   return value || undefined;
@@ -336,4 +364,28 @@ function platformAuditListPath(filters: PlatformAuditListFilters = {}): string {
  * local cache is exposed here; the platform remains the sole authority. */
 export async function listConnectedPlatformAuditLogs(tenant: string, filters: PlatformAuditListFilters = {}, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
   return callConnectedPlatformApi(tenant, platformAuditListPath(filters), fetchImpl);
+}
+
+function platformFinancePath(path: string, filters: Record<string, unknown> = {}): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') query.set(key, String(value));
+  }
+  const suffix = query.toString();
+  return `${path}${suffix ? `?${suffix}` : ''}`;
+}
+
+/** Platform finance is an evidence/oversight surface only. The provider
+ * gate remains authoritative: Desktop deliberately exposes no payout
+ * release, bank-detail, or manual-paid control. */
+export async function listConnectedPlatformFinanceVendors(tenant: string, filters: PlatformFinanceVendorListFilters = {}, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  return callConnectedPlatformApi(tenant, platformFinancePath('/admin/finance/vendors', filters), fetchImpl);
+}
+
+export async function listConnectedPlatformVendorFinancials(tenant: string, vendorId: string, filters: PlatformFinanceFinancialFilters = {}, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  return callConnectedPlatformApi(tenant, platformFinancePath(`/admin/finance/vendors/${encodeURIComponent(vendorId)}/financials`, filters), fetchImpl);
+}
+
+export async function listConnectedPlatformVendorTransactions(tenant: string, vendorId: string, filters: PlatformFinanceTransactionFilters = {}, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  return callConnectedPlatformApi(tenant, platformFinancePath(`/admin/finance/vendors/${encodeURIComponent(vendorId)}/transactions`, filters), fetchImpl);
 }

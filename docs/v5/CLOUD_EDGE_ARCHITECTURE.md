@@ -784,6 +784,19 @@ Both the local `settings.manage` route guard and the cloud's
 `audit_logs.view` permission are required. This is verified as a live reader
 only; it does not grant the Desktop any power to change the cloud history.
 
+**Cloud finance reader.** Desktop's `/laundry/platform-finance` view makes
+three existing finance reads visible without turning the edge into a
+settlement authority: the vendor finance directory, per-vendor financial
+periods, and per-vendor ledger transactions. It carries the cloud response
+through as read-only evidence and deliberately offers no payout release,
+manual-paid, bank-detail, or CSV-export route. The finance directory itself
+was narrowed at the cloud source to expose `payout_bank_ready` rather than
+bank account number, IFSC, bank name, or account-holder name. Both the local
+`settings.manage` guard and the cloud `finance.global_view` role are still
+necessary; a configured provider plus verifiable provider receipt and
+reconciliation workflow remain required before any payout execution surface
+can exist.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple

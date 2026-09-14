@@ -54,6 +54,18 @@ function mockFetch(): typeof fetch {
       assert.equal(authorization, 'Bearer platform-access-token');
       return json(200, { success: true, data: { items: [{ id: 'audit-001', action: 'vendor_reviewed', actor_role: 'ADMIN', target_type: 'vendor', target_id: 'application-001', after: { status: 'CORRECTION_REQUIRED' }, created_at: '2026-09-14T10:05:00.000Z' }], total: 1, page: 1, limit: 50 } });
     }
+    if (path === '/admin/finance/vendors?page=1&limit=50' && method === 'GET') {
+      assert.equal(authorization, 'Bearer platform-access-token');
+      return json(200, { success: true, data: [{ id: 'vendor-finance-001', name: 'Verified vendor', commission_rate: '12.00', is_active: true, payout_bank_ready: true }], meta: { total: 1, page: 1, limit: 50 } });
+    }
+    if (path === '/admin/finance/vendors/vendor-finance-001/financials?page=1&limit=20' && method === 'GET') {
+      assert.equal(authorization, 'Bearer platform-access-token');
+      return json(200, { success: true, data: [{ id: 'period-001', period_type: 'WEEKLY', period_start: '2026-09-07', period_end: '2026-09-13', gross_revenue: '1250.00', net_revenue: '1100.00', platform_commission: '150.00', payout_amount: '950.00', payout_status: 'HELD', failure_reason: 'payout provider not configured' }], meta: { total: 1, page: 1, limit: 20 } });
+    }
+    if (path === '/admin/finance/vendors/vendor-finance-001/transactions?page=1&limit=20' && method === 'GET') {
+      assert.equal(authorization, 'Bearer platform-access-token');
+      return json(200, { success: true, data: [{ id: 'transaction-001', type: 'ORDER_CREDIT', amount: '1250.00', direction: 'CREDIT', status: 'POSTED', description: 'Delivered order', created_at: '2026-09-14T10:00:00.000Z' }], meta: { total: 1, page: 1, limit: 20 } });
+    }
     throw new Error(`unexpected platform mock call: ${method} ${path}`);
   }) as unknown as typeof fetch;
 }
@@ -104,6 +116,17 @@ try {
   assert.equal(auditList.statusCode, 200, 'platform audit evidence is proxied as a read-only cloud reader');
   assert.equal(auditList.json().items[0].action, 'vendor_reviewed');
 
+  const financeVendors = await app.inject({ method: 'GET', url: '/api/platform/finance/vendors?page=1&limit=50', headers: ownerHeaders });
+  assert.equal(financeVendors.statusCode, 200, 'platform finance vendor visibility is proxied as a read-only cloud reader');
+  assert.equal(financeVendors.json()[0].payout_bank_ready, true, 'the finance overview carries readiness, never raw bank details');
+  assert.equal('bank_account_number' in financeVendors.json()[0], false, 'the Desktop does not receive a vendor bank account number');
+  const financePeriods = await app.inject({ method: 'GET', url: '/api/platform/finance/vendors/vendor-finance-001/financials?page=1&limit=20', headers: ownerHeaders });
+  assert.equal(financePeriods.statusCode, 200, 'platform financial periods remain cloud-authoritative');
+  assert.equal(financePeriods.json()[0].payout_status, 'HELD');
+  const financeTransactions = await app.inject({ method: 'GET', url: '/api/platform/finance/vendors/vendor-finance-001/transactions?page=1&limit=20', headers: ownerHeaders });
+  assert.equal(financeTransactions.statusCode, 200, 'platform ledger entries remain cloud-authoritative');
+  assert.equal(financeTransactions.json()[0].type, 'ORDER_CREDIT');
+
   const staff = await app.inject({ method: 'POST', url: '/api/settings/staff', headers: ownerHeaders, payload: { username: 'platform-counter', password: 'PlatformCounterPassword!26', roles: ['counter_staff'], firstName: 'Platform', lastName: 'Counter' } });
   assert.equal(staff.statusCode, 201);
   const counter = signIn('platform-counter', 'PlatformCounterPassword!26');
@@ -113,9 +136,11 @@ try {
   assert.equal(deniedOrders.statusCode, 403, 'a local counter role cannot access the platform order monitor');
   const deniedAudit = await app.inject({ method: 'GET', url: '/api/platform/audit-logs', headers: { cookie: `epic_session=${counter.token}` } });
   assert.equal(deniedAudit.statusCode, 403, 'a local counter role cannot access the platform evidence trail');
+  const deniedFinance = await app.inject({ method: 'GET', url: '/api/platform/finance/vendors', headers: { cookie: `epic_session=${counter.token}` } });
+  assert.equal(deniedFinance.statusCode, 403, 'a local counter role cannot access the platform finance reader');
 
   await app.close();
-  console.log('PASS platform control: connected admin session, vendor review, read-only order and audit oversight, and local permission guards complete');
+  console.log('PASS platform control: connected admin session, vendor review, read-only order/audit/finance oversight, and local permission guards complete');
 } finally {
   globalThis.fetch = originalFetch;
   delete process.env.EPIC_MARKETPLACE_CLOUD_API_URL;

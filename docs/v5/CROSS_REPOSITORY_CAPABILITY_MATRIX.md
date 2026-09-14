@@ -629,6 +629,22 @@ session against the real backend: the route listed live entries and opened a
 cloud-event evidence drawer. This creates a useful audit *reader*, not a
 second audit authority.
 
+**Platform finance oversight and bank-data minimization.** The real cloud
+admin-finance reader now feeds Desktop's read-only
+`/laundry/platform-finance` workspace through three independently
+permission-gated edge routes: vendor settlement readiness, a selected
+vendor's financial periods, and its ledger transactions. Desktop is not
+allowed to release a payout, mark it paid, edit a bank profile, or export a
+new payout file. The only bank signal available to the UI is
+`payout_bank_ready`; a targeted backend recovery removed the previously
+returned account number, IFSC, bank name, and holder name from the general
+HQ finance vendor directory. This protects the finance view from becoming a
+bulk bank-data disclosure surface while still explaining why a payout cannot
+be ready. The route is locally gated by `settings.manage` and independently
+requires the cloud's `finance.global_view` authorization. The provider
+evidence requirement remains `EXTERNAL_BLOCKER`; a held period is therefore
+shown as a real exception, never as a payment that Desktop can override.
+
 Explicitly deferred to later Phase 3 slices, not dropped: the remaining
 Platform Control domains (commissions/fees/settlements, promotions, approvals, support,
 exceptions, analytics, configuration, audit) and the Vendor Business
