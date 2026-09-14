@@ -411,7 +411,7 @@ function useDrawerFocus() {
 
   useEffect(() => {
     priorFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const frame = window.requestAnimationFrame(() => initialFocusRef.current?.focus());
+    const frame = window.requestAnimationFrame(() => (initialFocusRef.current || drawerRef.current)?.focus());
     return () => {
       window.cancelAnimationFrame(frame);
       if (priorFocusRef.current?.isConnected) priorFocusRef.current.focus();
@@ -424,7 +424,10 @@ function useDrawerFocus() {
     if (!focusable.length) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
+    if (!focusable.includes(document.activeElement as HTMLElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
       event.preventDefault();
       last.focus();
     } else if (!event.shiftKey && document.activeElement === last) {
@@ -721,6 +724,7 @@ function OrderWorkCardPage({ id }: { id: string }) {
 }
 
 function OrderWorkCardDrawer({ id, onClose }: { id: string; onClose: () => void }) {
+  const { drawerRef, onKeyDown } = useDrawerFocus();
   const detail = useQuery({
     queryKey: ["laundry-order", id],
     queryFn: () => apiGet<LaundryOrder & { timeline: Array<{ id: string; ts: string; action: string }>; tags?: Array<OrderTag> }>(`/laundry/orders/${id}`),
@@ -734,7 +738,7 @@ function OrderWorkCardDrawer({ id, onClose }: { id: string; onClose: () => void 
   }, [onClose]);
   return <>
     <button type="button" aria-label="Close order work card" onClick={onClose} className="fixed inset-0 z-40 cursor-default bg-[#171024]/65 backdrop-blur-[2px]" />
-    <aside role="dialog" aria-modal="true" aria-label="Order work card" className="fixed inset-y-0 right-0 z-50 flex w-full flex-col overflow-y-auto border-l border-[#272043]/10 bg-[#fffdfb] px-4 py-5 shadow-[-22px_0_60px_rgba(32,23,60,.22)] animate-in slide-in-from-right duration-300 sm:w-[min(52vw,820px)] sm:min-w-[520px] sm:px-5">
+    <aside ref={drawerRef} onKeyDown={onKeyDown} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Order work card" className="fixed inset-y-0 right-0 z-50 flex w-full flex-col overflow-y-auto border-l border-[#272043]/10 bg-[#fffdfb] px-4 py-5 shadow-[-22px_0_60px_rgba(32,23,60,.22)] animate-in slide-in-from-right duration-300 sm:w-[min(52vw,820px)] sm:min-w-[520px] sm:px-5">
       <OrderDetail order={detail.data} loading={detail.isLoading} onClose={onClose} presentation="drawer" />
     </aside>
   </>;

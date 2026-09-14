@@ -86,3 +86,22 @@ test('customer work card traps focus and restores it when dismissed', async ({ p
   await expect(drawer).toBeHidden()
   await expect(trigger).toBeFocused()
 })
+
+test('order work card traps focus and restores it when dismissed', async ({ page }) => {
+  await signIntoDemo(page)
+  await page.goto('/ui/app/#/laundry/orders', { waitUntil: 'domcontentloaded' })
+  const trigger = page.getByRole('button', { name: 'View' }).first()
+  await expect(trigger).toBeVisible()
+  await trigger.focus()
+  await trigger.click()
+
+  const drawer = page.getByRole('dialog', { name: 'Order work card' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(drawer.locator(':focus')).toHaveCount(1)
+
+  await page.keyboard.press('Escape')
+  await expect(drawer).toBeHidden()
+  await expect(trigger).toBeFocused()
+})

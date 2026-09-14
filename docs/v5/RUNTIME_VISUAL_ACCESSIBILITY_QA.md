@@ -86,3 +86,12 @@ content, and returns focus to the exact customer-row trigger after close or
 Escape. The runtime regression test verifies all four behaviours. The next
 drawer-focused slice should apply the same evidence standard to the order
 work card and any other custom modal surface.
+
+The order work card used the same custom modal pattern and received the same
+recovery. Its initial loading state now focuses the dialog itself (rather
+than leaving focus in the obscured order table); once Tab is pressed the
+focus cycle is restricted to order controls, and Escape returns to the
+originating `View` action. The three-test focused runtime suite passed after
+the correction. This also guards the short interval before asynchronous
+order detail loads, where a non-existent close button cannot be a focus
+target.
