@@ -147,3 +147,23 @@ test('print workset traps focus and restores it when dismissed', async ({ page }
   await expect(drawer).toBeHidden()
   await expect(trigger).toBeFocused()
 })
+
+test('expense reason dialog traps focus and restores its action', async ({ page }) => {
+  await signIntoDemo(page)
+  await page.goto('/ui/app/#/laundry/expenses', { waitUntil: 'domcontentloaded' })
+  const trigger = page.getByRole('button', { name: 'Cancel', exact: true }).first()
+  await expect(trigger).toBeVisible()
+  await trigger.focus()
+  await trigger.click()
+
+  const dialog = page.getByRole('dialog', { name: 'Cancel this expense?' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('textbox', { name: 'Expense action reason' })).toBeFocused()
+
+  for (let index = 0; index < 6; index += 1) await page.keyboard.press('Tab')
+  await expect(dialog.locator(':focus')).toHaveCount(1)
+
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await expect(trigger).toBeFocused()
+})

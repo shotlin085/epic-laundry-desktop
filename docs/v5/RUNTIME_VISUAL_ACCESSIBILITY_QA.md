@@ -110,3 +110,12 @@ dismissal but no focus ownership. It now focuses the workset while order
 details load, traps Tab navigation within the print controls, and restores the
 selected order trigger after dismissal. A seeded print-centre runtime test
 passed this flow against the rebuilt SPA on 15 September 2026.
+
+The controlled expense-reason confirmation dialog and route-skip exception
+dialog now use the shared dialog-focus recovery hook. The expense flow was
+runtime-verified without submitting or changing a record: the reason field
+receives focus, Tab remains within the confirmation dialog, Escape dismisses
+it, and focus returns to the originating Cancel action. The route-skip
+surface receives the same keyboard and Escape behavior through the shared
+hook; a populated route-stop fixture was not available in this disposable
+operator workspace for a submit-path test.
