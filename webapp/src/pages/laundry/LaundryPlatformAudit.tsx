@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom'
 import { apiGet, operatorErrorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { canUseUi } from '@/components/laundry/LaundryShell'
+import { useDialogFocusLifecycle } from '@/components/laundry/useDialogFocus'
 import VisualEmptyState from '@/components/laundry/VisualEmptyState'
 import VisualLoadingState from '@/components/laundry/VisualLoadingState'
 
@@ -36,6 +37,7 @@ export default function LaundryPlatformAudit() {
   const [targetType, setTargetType] = useState('')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<AuditEntry>()
+  useDialogFocusLifecycle(() => setSelected(undefined), Boolean(selected))
   const query = useMemo(() => new URLSearchParams(Object.entries({ ...(action.trim() ? { action: action.trim() } : {}), ...(targetType.trim() ? { target_type: targetType.trim() } : {}), page: String(page), limit: '50' })).toString(), [action, page, targetType])
   const logs = useQuery({ queryKey: ['platform-audit-logs', query], queryFn: () => apiGet<AuditPage>(`/platform/audit-logs?${query}`), enabled: canAccess && Boolean(connection.data?.connected), staleTime: 10_000 })
 

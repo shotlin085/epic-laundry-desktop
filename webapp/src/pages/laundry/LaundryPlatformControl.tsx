@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { apiGet, apiPost, apiPut, operatorErrorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { canUseUi } from '@/components/laundry/LaundryShell'
+import { useDialogFocusLifecycle } from '@/components/laundry/useDialogFocus'
 import VisualEmptyState from '@/components/laundry/VisualEmptyState'
 import VisualLoadingState from '@/components/laundry/VisualLoadingState'
 
@@ -42,6 +43,7 @@ export default function LaundryPlatformControl() {
   const [filter, setFilter] = useState<'ALL' | ReviewListStatus>('ALL')
   const [search, setSearch] = useState('')
   const [selectedVendorId, setSelectedVendorId] = useState<string | undefined>()
+  useDialogFocusLifecycle(() => setSelectedVendorId(undefined), Boolean(selectedVendorId))
   const connect = useMutation({ mutationFn: () => apiPost<PlatformStatus>('/platform/connect', { email, password }), onSuccess: () => { setNotice('Connected to the real platform-admin account.'); setPassword(''); void client.invalidateQueries({ queryKey: ['platform-status'] }) } })
   const disconnect = useMutation({ mutationFn: () => apiPost<PlatformStatus>('/platform/disconnect'), onSuccess: () => { setNotice('Disconnected.'); setSelectedVendorId(undefined); void client.invalidateQueries({ queryKey: ['platform-status'] }); void client.invalidateQueries({ queryKey: ['platform-vendors'] }) } })
   const filterParams = useMemo(() => new URLSearchParams(Object.entries({ ...(filter === 'ALL' ? {} : { status: filter }), ...(search.trim() ? { search: search.trim() } : {}), limit: '100' })).toString(), [filter, search])

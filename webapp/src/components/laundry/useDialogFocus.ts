@@ -57,3 +57,55 @@ export function useDialogFocus<D extends HTMLElement = HTMLElement, T extends HT
 
   return { dialogRef, initialFocusRef, onKeyDown }
 }
+
+export function useDialogFocusLifecycle(onClose: () => void, enabled: boolean) {
+  const closeHandler = useRef(onClose)
+  closeHandler.current = onClose
+
+  useEffect(() => {
+    if (!enabled) return
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const getDialog = () => Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')).at(-1)
+    const getFocusable = () => Array.from(getDialog()?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || []).filter((element) => !element.hasAttribute('hidden'))
+    const frame = window.requestAnimationFrame(() => (getFocusable()[0] || getDialog())?.focus())
+    const onKeyDown = (event: KeyboardEvent) => {
+      const dialog = getDialog()
+      if (!dialog) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeHandler.current()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const focusable = getFocusable()
+      if (!focusable.length) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (!dialog.contains(document.activeElement)) {
+        event.preventDefault()
+        ;(event.shiftKey ? last : first).focus()
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      document.removeEventListener('keydown', onKeyDown)
+      if (previous?.isConnected) {
+        previous.focus()
+        window.requestAnimationFrame(() => {
+          if (previous.isConnected) previous.focus()
+        })
+      }
+    }
+  }, [enabled])
+}

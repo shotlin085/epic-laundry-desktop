@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom'
 import { apiGet, operatorErrorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { canUseUi } from '@/components/laundry/LaundryShell'
+import { useDialogFocusLifecycle } from '@/components/laundry/useDialogFocus'
 import VisualEmptyState from '@/components/laundry/VisualEmptyState'
 import VisualLoadingState from '@/components/laundry/VisualLoadingState'
 
@@ -45,6 +46,7 @@ export default function LaundryPlatformOrders() {
   const [status, setStatus] = useState<(typeof statusOptions)[number]>('ALL')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<string>()
+  useDialogFocusLifecycle(() => setSelected(undefined), Boolean(selected))
   const query = useMemo(() => new URLSearchParams(Object.entries({ ...(search.trim() ? { search: search.trim() } : {}), ...(status === 'ALL' ? {} : { status }), page: String(page), limit: '50' })).toString(), [page, search, status])
   const orders = useQuery({ queryKey: ['platform-orders', query], queryFn: () => apiGet<PlatformOrderPage>(`/platform/orders?${query}`), enabled: canAccess && Boolean(connection.data?.connected), staleTime: 10_000 })
   const selectedOrder = orders.data?.orders?.find((order) => order.id === selected)

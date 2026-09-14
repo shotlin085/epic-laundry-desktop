@@ -119,3 +119,11 @@ it, and focus returns to the originating Cancel action. The route-skip
 surface receives the same keyboard and Escape behavior through the shared
 hook; a populated route-stop fixture was not available in this disposable
 operator workspace for a submit-path test.
+
+The platform-admin audit, marketplace-order, and vendor-review drawers now use
+the shared lifecycle focus boundary as well. Their cloud-owned actions remain
+permission-gated and unchanged: the interaction layer only owns focus,
+keyboard containment, Escape dismissal, and return to the invoking row. The
+local demo fixture has no connected platform-admin session, so this slice was
+validated by TypeScript/build/static checks and the shared drawer regressions;
+it is not a claim of a fresh authenticated cloud-admin runtime pass.
