@@ -748,6 +748,13 @@ payment, or rider workflow. A later backend convergence slice must reconcile
 the old admin writer to the canonical state-machine before any platform
 mutation is added here.
 
+The recovery is enforced at the cloud boundary as well: legacy admin-order
+write endpoints now fail closed with `409 ORDER_LIFECYCLE_CONVERGENCE_REQUIRED`.
+Desktop's read-only posture is therefore defense in depth, not merely a UI
+choice. Reads and exports remain usable; platform mutation returns only when
+it has one canonical state-machine implementation with the required audit,
+reason, authorization, OTP/payment and idempotency checks.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple

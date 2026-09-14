@@ -576,6 +576,21 @@ The contract test verifies exact filter forwarding, detail/timeline access,
 not-connected fail-closed behavior, and that a local counter role receives
 403 for the monitor as well as vendor review.
 
+**Lifecycle recovery guard.** The audit also found that the two historical
+admin-order write families (`/admin/orders/*` and `/orders/admin/*`) were
+still mounted and could bypass that canonical path. Backend commit
+`1a50e7a` now returns explicit `409
+ORDER_LIFECYCLE_CONVERGENCE_REQUIRED` for every legacy admin order mutation
+(manual create, status, rider assignment, cancellation, refund and their
+bulk forms) after normal authentication/authorization. Their read/export
+surfaces remain available. This is an intentional fail-closed recovery,
+not a completed replacement: canonical platform-admin overrides must be
+implemented on the state machine with reason, step-up approval, event audit,
+OTP/payment preconditions and idempotency before any write control returns.
+Live verification used a real ADMIN token against the running backend and
+confirmed the manual-order route returns that 409; the complete backend
+suite then passed 874/874 tests.
+
 Explicitly deferred to later Phase 3 slices, not dropped: the remaining
 Platform Control domains (commissions/fees/settlements, promotions, approvals, support,
 exceptions, analytics, configuration, audit) and the Vendor Business
