@@ -127,3 +127,14 @@ keyboard containment, Escape dismissal, and return to the invoking row. The
 local demo fixture has no connected platform-admin session, so this slice was
 validated by TypeScript/build/static checks and the shared drawer regressions;
 it is not a claim of a fresh authenticated cloud-admin runtime pass.
+
+## Packaging follow-up
+
+On 15 September 2026, the current runtime was rebuilt through the Windows
+Electron packaging pipeline with `npm run pack`. The unpacked artifact was
+created at `desktop/dist/win-unpacked/Epic Laundry.exe`; its generated release
+manifest verified all 3,828 checksum entries. Desktop workspace, menu-routing,
+recovery-policy, release-signature, and production-release-guard tests also
+passed. This confirms that the current web/server bundle is accepted by the
+packaging pipeline. It does not certify a native-window walkthrough, printer,
+scanner, scale, or other hardware path; those remain `NEEDS_REAL_HARDWARE`.
