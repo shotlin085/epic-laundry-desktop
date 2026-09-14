@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ArrowLeft, Calculator, CalendarClock, CheckCircle2, ChevronRight, FileCheck2, FileText, Landmark, Plus, ReceiptIndianRupee, ShieldCheck, X } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { apiGet, apiPost, apiPut } from '@/lib/api'
 import { formatINR, localDateKey } from '@/lib/utils'
@@ -90,7 +90,66 @@ function PolicyBuilder({ onClose, onRefresh }: { onClose: () => void; onRefresh:
 }
 
 function CalculationPreview({ preview }: { preview: any }) { const rate = preview.rateBps !== undefined ? `${Number(preview.rateBps) / 100}%` : preview.ratePercent !== undefined ? `${preview.ratePercent}%` : 'Configured rate'; const basis = preview.netTaxableSupplyPaise ?? preview.taxableSupplyPaise ?? preview.basePaise ?? preview.calculationBasisPaise; return <section className="rounded-2xl border border-[#cfc6ff] bg-[#f7f5ff] p-4"><div className="flex items-center gap-2"><Calculator className="h-4 w-4 text-[#5d42e8]" /><p className="text-sm font-extrabold text-[#3e2da6]">Calculation preview</p></div><div className="mt-4 space-y-2 text-sm"><Row label="Eligible transaction value" value={basis !== undefined ? money(basis) : 'Configured source basis'} /><Row label="Applied rate" value={rate} /><div className="border-t border-[#ddd7ff] pt-2"><Row label="Resulting liability" value={money(preview.amountPaise)} strong /></div></div><details className="mt-4"><summary className="cursor-pointer text-xs font-bold text-[#5d42e8]">How was this calculated?</summary><p className="mt-2 text-xs leading-5 text-[#62598d]">The server applies the effective policy, threshold, category and evidence inputs. Posting recalculates independently and keeps the source reference idempotent.</p></details>{preview.status && preview.status !== 'APPLICABLE' ? <p className="mt-3 rounded-xl bg-white/70 p-2 text-xs font-bold text-[#62598d]">Result: {String(preview.status).replace(/_/g, ' ')}</p> : null}</section> }
-function Drawer({ title, subtitle, children, onClose }: { title: string; subtitle: string; children: ReactNode; onClose: () => void }) { return <div className="fixed inset-0 z-50 flex justify-end bg-[#0e1e2b]/45 p-0 backdrop-blur-[1px]" role="dialog" aria-modal="true" aria-label={title}><button type="button" aria-label="Close panel" onClick={onClose} className="absolute inset-0 cursor-default" /><aside className="animate-in slide-in-from-right flex h-full w-full max-w-xl flex-col bg-[#fffefd] shadow-[-18px_0_50px_rgba(13,31,43,.22)]"><div className="flex items-start justify-between border-b border-[#e3e9eb] px-5 py-5"><div><p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#6b4df5]">Statutory workspace</p><h2 className="mt-1 font-display text-2xl font-semibold tracking-[-.035em] text-[#17353c]">{title}</h2><p className="mt-1 text-sm text-[#64747e]">{subtitle}</p></div><button type="button" aria-label="Close panel" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-xl border border-[#dce4e6] text-[#52656e] transition hover:bg-[#f4f6f7]"><X className="h-4 w-4" /></button></div><div className="flex-1 overflow-y-auto px-5 py-5">{children}</div></aside></div> }
+function useStatutoryDrawerFocus(onClose: () => void) {
+  const drawerRef = useRef<HTMLElement | null>(null)
+  const closeRef = useRef<HTMLButtonElement | null>(null)
+  const closeHandler = useRef(onClose)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
+  closeHandler.current = onClose
+
+  const restoreFocus = () => {
+    const previous = previousFocusRef.current
+    if (!previous?.isConnected) return
+    previous.focus()
+    window.requestAnimationFrame(() => {
+      if (previous.isConnected) previous.focus()
+    })
+  }
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const frame = window.requestAnimationFrame(() => (closeRef.current || drawerRef.current)?.focus())
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        restoreFocus()
+        closeHandler.current()
+      }
+    }
+    document.addEventListener('keydown', onEscape)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      document.removeEventListener('keydown', onEscape)
+      restoreFocus()
+    }
+  }, [])
+
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Tab') return
+    const focusable = Array.from(drawerRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') || [])
+    if (!focusable.length) {
+      event.preventDefault()
+      drawerRef.current?.focus()
+      return
+    }
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (!drawerRef.current?.contains(document.activeElement)) {
+      event.preventDefault()
+      ;(event.shiftKey ? last : first).focus()
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
+
+  return { drawerRef, closeRef, onKeyDown, restoreFocus }
+}
+
+function Drawer({ title, subtitle, children, onClose }: { title: string; subtitle: string; children: ReactNode; onClose: () => void }) { const focus = useStatutoryDrawerFocus(onClose); return <div className="fixed inset-0 z-50 flex justify-end bg-[#0e1e2b]/45 p-0 backdrop-blur-[1px]" role="dialog" aria-modal="true" aria-label={title}><button type="button" aria-label="Close panel backdrop" onClick={onClose} className="absolute inset-0 cursor-default" /><aside ref={focus.drawerRef} onKeyDown={focus.onKeyDown} tabIndex={-1} className="animate-in slide-in-from-right flex h-full w-full max-w-xl flex-col bg-[#fffefd] shadow-[-18px_0_50px_rgba(13,31,43,.22)]"><div className="flex items-start justify-between border-b border-[#e3e9eb] px-5 py-5"><div><p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#6b4df5]">Statutory workspace</p><h2 className="mt-1 font-display text-2xl font-semibold tracking-[-.035em] text-[#17353c]">{title}</h2><p className="mt-1 text-sm text-[#64747e]">{subtitle}</p></div><button ref={focus.closeRef} type="button" aria-label="Close panel" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-xl border border-[#dce4e6] text-[#52656e] transition hover:bg-[#f4f6f7]"><X className="h-4 w-4" /></button></div><div className="flex-1 overflow-y-auto px-5 py-5">{children}</div></aside></div> }
 function CommandPanel({ eyebrow, title, icon, children }: { eyebrow: string; title: string; icon: IconType; children: ReactNode }) { return <section className="rounded-[24px] border border-[#273d4a]/10 bg-white p-5 shadow-[0_10px_30px_rgba(37,48,43,.045)] md:p-6"><div className="flex items-center gap-3"><FinanceMark type={icon} /><div><p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#597f85]">{eyebrow}</p><h2 className="mt-0.5 font-display text-xl font-semibold tracking-[-.03em] text-[#17353c]">{title}</h2></div></div><div className="mt-5">{children}</div></section> }
 function FinanceMark({ type, inverse = false }: { type: IconType; inverse?: boolean }) { const Icon = type === 'liability' ? ReceiptIndianRupee : type === 'calendar' ? CalendarClock : type === 'return' ? FileText : type === 'evidence' ? FileCheck2 : type === 'attention' ? AlertTriangle : type === 'calculator' ? Calculator : type === 'policy' ? Landmark : type === 'complete' ? CheckCircle2 : ShieldCheck; const tones: Record<IconType, string> = { health: 'bg-[#e5f4ef] text-[#247269]', liability: 'bg-[#f0edff] text-[#6346e7]', calendar: 'bg-[#fff2d8] text-[#a66b12]', return: 'bg-[#e9f2ff] text-[#376fc3]', evidence: 'bg-[#eaf7f3] text-[#2a806c]', attention: 'bg-[#fff0ea] text-[#c15d38]', calculator: 'bg-[#f1efff] text-[#6749e5]', policy: 'bg-[#e8f4f5] text-[#28727a]', complete: 'bg-[#e7f6ec] text-[#258153]' }; return <span className={`relative grid h-10 w-10 shrink-0 place-items-center rounded-[14px] ${inverse ? 'bg-white text-[#5d42e8]' : tones[type]}`}><Icon className="h-[18px] w-[18px]" strokeWidth={2.15} /><i className={`absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full ${inverse ? 'bg-[#2a9a88]' : 'bg-current opacity-70'}`} /></span> }
 function Metric({ icon, label, value, note, tone }: { icon: IconType; label: string; value: string; note: string; tone: 'violet' | 'amber' | 'blue' | 'rose' }) { const toneMap = { violet: 'from-[#f6f3ff] to-white', amber: 'from-[#fff9eb] to-white', blue: 'from-[#f0f6ff] to-white', rose: 'from-[#fff5f2] to-white' }; return <article className={`rounded-[22px] border border-[#273d4a]/10 bg-gradient-to-br ${toneMap[tone]} p-4 shadow-[0_8px_25px_rgba(37,48,43,.035)]`}><FinanceMark type={icon} /><p className="mt-4 text-[10px] font-extrabold uppercase tracking-[.13em] text-[#6c7e87]">{label}</p><p className="mt-1 font-display text-2xl font-semibold tracking-[-.04em] text-[#17353c]">{value}</p><p className="mt-1 text-[11px] leading-4 text-[#718089]">{note}</p></article> }

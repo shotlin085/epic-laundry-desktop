@@ -105,3 +105,24 @@ test('order work card traps focus and restores it when dismissed', async ({ page
   await expect(drawer).toBeHidden()
   await expect(trigger).toBeFocused()
 })
+
+test('statutory workspace traps focus and restores it when dismissed', async ({ page }) => {
+  await signIntoDemo(page)
+  await page.goto('/ui/app/#/laundry/finance/statutory', { waitUntil: 'domcontentloaded' })
+  const trigger = page.getByRole('button').filter({ hasText: 'Post TDS' }).first()
+  await expect(trigger).toBeVisible()
+  await trigger.focus()
+  await trigger.click()
+
+  const drawer = page.getByRole('dialog', { name: 'Post TDS liability' })
+  const close = drawer.getByRole('button', { name: 'Close panel', exact: true }).last()
+  await expect(drawer).toBeVisible()
+  await expect(close).toBeFocused()
+
+  for (let index = 0; index < 10; index += 1) await page.keyboard.press('Tab')
+  await expect(drawer.locator(':focus')).toHaveCount(1)
+
+  await page.keyboard.press('Escape')
+  await expect(drawer).toBeHidden()
+  await expect(trigger).toBeFocused()
+})

@@ -95,3 +95,12 @@ originating `View` action. The three-test focused runtime suite passed after
 the correction. This also guards the short interval before asynchronous
 order detail loads, where a non-existent close button cannot be a focus
 target.
+
+The statutory finance workspace had the same interaction risk across its
+return, liability-posting and policy-builder drawers. It now focuses the
+drawer close control after opening, keeps keyboard traversal inside the
+workspace (including the empty/initial form state), dismisses on Escape, and
+restores the initiating action. The focused runtime regression passed against
+the rebuilt SPA on 15 September 2026. The backdrop control has a distinct
+accessible name so screen readers do not report two identical “Close panel”
+actions.
