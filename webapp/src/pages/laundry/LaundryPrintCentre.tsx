@@ -9,7 +9,7 @@ import {
   Tag,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import QRCode from "qrcode";
 import JsBarcode from "jsbarcode";
@@ -369,16 +369,51 @@ function OrderList({
 }
 
 function PrintWorksetDrawer({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  const drawerRef = useRef<HTMLElement>(null);
+  const priorFocusRef = useRef<HTMLElement | null>(null);
+  const closeHandler = useRef(onClose);
+  closeHandler.current = onClose;
   useEffect(() => {
+    priorFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = window.requestAnimationFrame(() => drawerRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeHandler.current();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", onKeyDown);
+      if (priorFocusRef.current?.isConnected) {
+        priorFocusRef.current.focus();
+        window.requestAnimationFrame(() => {
+          if (priorFocusRef.current?.isConnected) priorFocusRef.current.focus();
+        });
+      }
+    };
+  }, []);
+  const onTrapKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(drawerRef.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || []).filter((element) => !element.hasAttribute("hidden"));
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!drawerRef.current?.contains(document.activeElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
   return <>
     <button type="button" aria-label="Close live workset" onClick={onClose} className="fixed inset-0 z-40 cursor-default bg-[#171024]/65 backdrop-blur-[2px]" />
-    <aside role="dialog" aria-modal="true" aria-label="Live print workset" className="fixed inset-y-0 right-0 z-50 flex w-full flex-col overflow-y-auto border-l border-[#272043]/10 bg-[#fffdfb] px-4 py-5 shadow-[-22px_0_60px_rgba(32,23,60,.22)] animate-in slide-in-from-right duration-300 sm:w-[min(72vw,1040px)] sm:min-w-[680px] sm:px-6">
+    <aside ref={drawerRef} onKeyDown={onTrapKeyDown} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Live print workset" className="fixed inset-y-0 right-0 z-50 flex w-full flex-col overflow-y-auto border-l border-[#272043]/10 bg-[#fffdfb] px-4 py-5 shadow-[-22px_0_60px_rgba(32,23,60,.22)] animate-in slide-in-from-right duration-300 sm:w-[min(72vw,1040px)] sm:min-w-[680px] sm:px-6">
       {children}
     </aside>
   </>;

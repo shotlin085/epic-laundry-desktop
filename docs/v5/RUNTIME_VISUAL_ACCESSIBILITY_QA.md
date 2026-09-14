@@ -104,3 +104,9 @@ restores the initiating action. The focused runtime regression passed against
 the rebuilt SPA on 15 September 2026. The backdrop control has a distinct
 accessible name so screen readers do not report two identical “Close panel”
 actions.
+
+The Print Centre live workset also had a custom right-side dialog with Escape
+dismissal but no focus ownership. It now focuses the workset while order
+details load, traps Tab navigation within the print controls, and restores the
+selected order trigger after dismissal. A seeded print-centre runtime test
+passed this flow against the rebuilt SPA on 15 September 2026.

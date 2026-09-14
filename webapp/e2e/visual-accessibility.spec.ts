@@ -126,3 +126,24 @@ test('statutory workspace traps focus and restores it when dismissed', async ({ 
   await expect(drawer).toBeHidden()
   await expect(trigger).toBeFocused()
 })
+
+test('print workset traps focus and restores it when dismissed', async ({ page }) => {
+  await signIntoDemo(page)
+  await page.goto('/ui/app/#/laundry/print-centre', { waitUntil: 'domcontentloaded' })
+  await page.getByRole('button', { name: 'All', exact: true }).click()
+  const trigger = page.getByRole('button', { name: /INV-\d+-\d+/ }).filter({ hasText: 'Demo Nisha' }).first()
+  await expect(trigger).toBeVisible()
+  await trigger.focus()
+  await trigger.click()
+
+  const drawer = page.getByRole('dialog', { name: 'Live print workset' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer).toBeFocused()
+
+  for (let index = 0; index < 10; index += 1) await page.keyboard.press('Tab')
+  await expect(drawer.locator(':focus')).toHaveCount(1)
+
+  await page.keyboard.press('Escape')
+  await expect(drawer).toBeHidden()
+  await expect(trigger).toBeFocused()
+})
