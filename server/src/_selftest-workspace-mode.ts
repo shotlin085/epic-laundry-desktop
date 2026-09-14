@@ -22,9 +22,10 @@ function start(mode: 'production' | 'demo', port: number): ChildProcess {
 async function waitForHealth(port: number) {
   // A clean demo workspace intentionally materializes the deep visual fixture
   // before listening. Keep the bound finite, but allow the fixture to bootstrap
-  // on slower Windows CI runners instead of treating expected seed work as a
-  // server-health failure.
-  for (let attempt = 0; attempt < 150; attempt += 1) {
+  // on slower Windows/CI runners instead of treating expected seed work as a
+  // server-health failure. This is a test-only wait; production startup still
+  // has the same deterministic seed-before-listen contract.
+  for (let attempt = 0; attempt < 600; attempt += 1) {
     try { if ((await fetch(`http://127.0.0.1:${port}/api/health`)).ok) return; } catch { /* server is still starting */ }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
