@@ -591,6 +591,27 @@ Live verification used a real ADMIN token against the running backend and
 confirmed the manual-order route returns that 409; the complete backend
 suite then passed 874/874 tests.
 
+**Settlement/payout evidence recovery.** The subsequent Platform Control
+settlement audit found two separate unsafe success paths in the real backend:
+the Payout Worker supplied a deterministic `INTERNAL-<financial-id>` value
+when no bank provider adapter was configured, and the legacy
+`POST /admin/finance/vendors/:shopId/payouts/:periodId/mark-paid` shortcut
+could put a period into `PAID` without any external payment evidence. Neither
+is an actual bank disbursement. Backend recovery makes both fail closed:
+providerless, bank-ready rows now become `HELD` with
+`payout provider not configured`, retaining `payout_ref = NULL` and
+`attempt_count = 0`; the manual route returns `409
+PAYOUT_PROVIDER_EVIDENCE_REQUIRED` without querying or mutating its period.
+The normal injected-provider path remains the only path to `PAID` and must
+return a real external reference. Live verification used an isolated real
+Postgres `shop_financials` row with temporarily restored bank fields,
+confirmed `HELD`/no reference/no attempt burn, then deleted both that row and
+its audit record (post-cleanup counts: zero). A real platform-admin API call
+also returned the new 409. This is a safety recovery, not a payment-provider
+integration: real bank disbursement remains `EXTERNAL_BLOCKER` until a
+provider adapter, credentials, webhook/reconciliation evidence, and operator
+workflow are introduced.
+
 Explicitly deferred to later Phase 3 slices, not dropped: the remaining
 Platform Control domains (commissions/fees/settlements, promotions, approvals, support,
 exceptions, analytics, configuration, audit) and the Vendor Business

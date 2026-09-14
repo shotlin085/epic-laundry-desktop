@@ -755,6 +755,22 @@ choice. Reads and exports remain usable; platform mutation returns only when
 it has one canonical state-machine implementation with the required audit,
 reason, authorization, OTP/payment and idempotency checks.
 
+**Payout boundary is likewise evidence-first.** The platform settlement audit
+confirmed that a payout must not be represented as bank-paid merely because a
+background process ran or an administrator clicked a button. The backend's
+former default worker adapter generated an `INTERNAL-*` reference in the
+absence of a real disbursement provider, while an older admin-finance route
+could set a period to `PAID` without a provider receipt. Both are now
+fail-closed: no configured provider moves an otherwise bank-ready period to
+`HELD` with an explicit configuration reason and no retry-attempt burn; the
+manual `mark-paid` compatibility endpoint returns `409
+PAYOUT_PROVIDER_EVIDENCE_REQUIRED` and does no financial write. Desktop must
+therefore not add a payout execution control or call a period "paid" unless a
+future provider-backed contract returns external evidence that can be stored,
+reconciled and audited. Read-only settlement monitoring remains an eligible
+future Platform Control surface; payout execution remains an
+`EXTERNAL_BLOCKER`, not a UI gap to paper over.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple
