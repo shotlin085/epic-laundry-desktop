@@ -1,7 +1,7 @@
 # Epic Laundry V5.1 final audit snapshot
 
-Audit date: 15 September 2026  
-Desktop HEAD: `0056551`  
+Audit date: 15 September 2026
+Desktop HEAD: `b42d264`  
 Backend HEAD: `8388102`  
 Scope: local main branches only; no push, deploy, or production-data mutation.
 
@@ -36,6 +36,16 @@ Scope: local main branches only; no push, deploy, or production-data mutation.
   production-release-guard tests: passed.
 - Windows `dist:win`: completed; release manifest verified 3,829 checksum
   entries.
+
+## Current remote CI status
+
+Read-only GitHub Actions query: 15 September 2026. The latest listed `Epic
+Laundry CI` run on remote `main` is run `#10`, completed with `success`, for
+remote commit `b81daf0a2717fd01a047fba6f99b66c3c1e6b1cd`:
+[GitHub Actions run #10](https://github.com/Souvik988/epic-laundry-desktop/actions/runs/34593616440).
+The remote run is green, but its commit does not match local Desktop HEAD
+`b42d2640ff5c46709f67ddcd9d4fe4bcf076a02f`; because this work was intentionally
+not pushed, remote CI does not yet certify the local final-audit commits.
 
 ## Corrections made during final audit
 
@@ -73,14 +83,16 @@ still require the real business configuration and professional/legal sign-off.
 
 ### `NEEDS_VERIFICATION`
 
-This audit did not query the current remote GitHub Actions result. Local CI-
-equivalent gates are green; remote CI status must be read from GitHub before a
-production-candidate claim.
+Remote GitHub Actions was queried read-only. The latest remote `main` run is
+green, but it covers a different commit than this local audit. A CI run for
+local HEAD remains unavailable until the changes are explicitly pushed by an
+authorized release owner.
 
 ## Release conclusion
 
 The current local branches are a strong production-candidate build for
 controlled internal acceptance, not a fully production-certified release.
 No Critical or High issue was found in the exercised local software gates.
-The remaining blockers are external signing, provider, hardware, remote-CI,
-and entity/legal evidence—not silently converted into software passes.
+The remaining blockers are external signing, provider, hardware, CI evidence
+for the unpushed local HEAD, and entity/legal evidence—not silently converted
+into software passes.
