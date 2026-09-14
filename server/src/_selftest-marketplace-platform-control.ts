@@ -50,6 +50,10 @@ function mockFetch(): typeof fetch {
       assert.equal(authorization, 'Bearer platform-access-token');
       return json(200, { success: true, data: { id: 'order-001', order_number: 'ORD-1', status: 'OUT_FOR_DELIVERY', customer_name: 'Asha', items: [{ name: 'Shirt', quantity: 2 }], timeline: [{ to_status: 'OUT_FOR_DELIVERY', changed_at: '2026-09-14T10:00:00.000Z', actor_role: 'RIDER' }] } });
     }
+    if (path === '/admin/audit-logs?action=vendor_reviewed&limit=50&page=1' && method === 'GET') {
+      assert.equal(authorization, 'Bearer platform-access-token');
+      return json(200, { success: true, data: { items: [{ id: 'audit-001', action: 'vendor_reviewed', actor_role: 'ADMIN', target_type: 'vendor', target_id: 'application-001', after: { status: 'CORRECTION_REQUIRED' }, created_at: '2026-09-14T10:05:00.000Z' }], total: 1, page: 1, limit: 50 } });
+    }
     throw new Error(`unexpected platform mock call: ${method} ${path}`);
   }) as unknown as typeof fetch;
 }
@@ -96,6 +100,10 @@ try {
   assert.equal(orderDetail.statusCode, 200, 'platform order oversight reads the cloud-owned order detail');
   assert.equal(orderDetail.json().timeline[0].actor_role, 'RIDER');
 
+  const auditList = await app.inject({ method: 'GET', url: '/api/platform/audit-logs?action=vendor_reviewed&limit=50&page=1', headers: ownerHeaders });
+  assert.equal(auditList.statusCode, 200, 'platform audit evidence is proxied as a read-only cloud reader');
+  assert.equal(auditList.json().items[0].action, 'vendor_reviewed');
+
   const staff = await app.inject({ method: 'POST', url: '/api/settings/staff', headers: ownerHeaders, payload: { username: 'platform-counter', password: 'PlatformCounterPassword!26', roles: ['counter_staff'], firstName: 'Platform', lastName: 'Counter' } });
   assert.equal(staff.statusCode, 201);
   const counter = signIn('platform-counter', 'PlatformCounterPassword!26');
@@ -103,9 +111,11 @@ try {
   assert.equal(denied.statusCode, 403, 'a local counter role cannot access the platform review proxy');
   const deniedOrders = await app.inject({ method: 'GET', url: '/api/platform/orders', headers: { cookie: `epic_session=${counter.token}` } });
   assert.equal(deniedOrders.statusCode, 403, 'a local counter role cannot access the platform order monitor');
+  const deniedAudit = await app.inject({ method: 'GET', url: '/api/platform/audit-logs', headers: { cookie: `epic_session=${counter.token}` } });
+  assert.equal(deniedAudit.statusCode, 403, 'a local counter role cannot access the platform evidence trail');
 
   await app.close();
-  console.log('PASS platform control: connected admin session, vendor review, read-only marketplace order oversight, and local permission guards complete');
+  console.log('PASS platform control: connected admin session, vendor review, read-only order and audit oversight, and local permission guards complete');
 } finally {
   globalThis.fetch = originalFetch;
   delete process.env.EPIC_MARKETPLACE_CLOUD_API_URL;

@@ -771,6 +771,19 @@ reconciled and audited. Read-only settlement monitoring remains an eligible
 future Platform Control surface; payout execution remains an
 `EXTERNAL_BLOCKER`, not a UI gap to paper over.
 
+**Cloud audit evidence reader.** Desktop also now has a separate
+`/laundry/platform-audit` Platform Control route, backed solely by the
+backend's real `GET /admin/audit-logs` reader. It forwards only that API's
+existing bounded filters and preserves the cloud response as the authority;
+it does not mirror audit events into SQLite or offer mutation controls. The
+screen is intentionally an evidence ledger rather than a generic activity
+feed: a compact, filterable list opens an event drawer with the recorded
+target, actor role, and before/after snapshots. IP/user-agent values remain
+outside the Desktop operator view even though the cloud API may return them.
+Both the local `settings.manage` route guard and the cloud's
+`audit_logs.view` permission are required. This is verified as a live reader
+only; it does not grant the Desktop any power to change the cloud history.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple

@@ -70,6 +70,21 @@ export type PlatformOrderListFilters = {
   limit?: number;
 };
 
+/** Filters intentionally mirror the real append-only HQ audit-log reader.
+ * There is no local event copy: Desktop observes the cloud evidence trail
+ * rather than making a competing audit authority. */
+export type PlatformAuditListFilters = {
+  actor_user_id?: string;
+  actor_shop_id?: string;
+  target_type?: string;
+  target_id?: string;
+  action?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+};
+
 function cloudApiBaseUrl(): string | undefined {
   const value = String(process.env.EPIC_MARKETPLACE_CLOUD_API_URL || '').trim();
   return value || undefined;
@@ -306,4 +321,19 @@ export async function listConnectedPlatformOrders(tenant: string, filters: Platf
  * and delivery sections. Kept read-only for the same lifecycle-safety rule. */
 export async function getConnectedPlatformOrder(tenant: string, orderId: string, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
   return callConnectedPlatformApi(tenant, `/admin/orders/${encodeURIComponent(orderId)}`, fetchImpl);
+}
+
+function platformAuditListPath(filters: PlatformAuditListFilters = {}): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') query.set(key, String(value));
+  }
+  const suffix = query.toString();
+  return `/admin/audit-logs${suffix ? `?${suffix}` : ''}`;
+}
+
+/** Cloud-owned, append-only evidence trail. No audit write, delete, or
+ * local cache is exposed here; the platform remains the sole authority. */
+export async function listConnectedPlatformAuditLogs(tenant: string, filters: PlatformAuditListFilters = {}, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  return callConnectedPlatformApi(tenant, platformAuditListPath(filters), fetchImpl);
 }

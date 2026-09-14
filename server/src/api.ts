@@ -99,7 +99,7 @@ import { pullCloudOrders } from './modules/marketplace/cloud-order-sync.js';
 import { acceptCloudOrder, CloudOrderConflictError, rejectCloudOrder } from './modules/marketplace/cloud-order-actions.js';
 import { advanceCloudOrderStage, CLOUD_ORDER_STAGES, cloudProgressErrorHint, proposeCloudReconciliation, syncCloudOrderDetail, type CloudOrderStage } from './modules/marketplace/cloud-order-progress.js';
 import { fetchCloudCatalogue, updateCloudCatalogueItem, updateCloudCatalogueStock } from './modules/marketplace/cloud-catalogue.js';
-import { connectPlatformSession, disconnectPlatformSession, getPlatformSessionStatus, callConnectedPlatformApi, getConnectedPlatformOrder, getConnectedPlatformVendor, listConnectedPlatformOrders, listConnectedPlatformVendors, reviewConnectedPlatformVendor, writeConnectedPlatformApi } from './modules/marketplace/platform-session.js';
+import { connectPlatformSession, disconnectPlatformSession, getPlatformSessionStatus, callConnectedPlatformApi, getConnectedPlatformOrder, getConnectedPlatformVendor, listConnectedPlatformAuditLogs, listConnectedPlatformOrders, listConnectedPlatformVendors, reviewConnectedPlatformVendor, writeConnectedPlatformApi } from './modules/marketplace/platform-session.js';
 import { renderCanonicalTaxInvoice } from './modules/gst/canonical-invoice-print.js';
 import { approveTaxPolicyRule, createTaxPolicyRule, listTaxPolicyRules, retireTaxPolicyRule, saveSupplierTaxProfile, supplierTaxProfile, taxReadiness } from './modules/gst/tax-policy.js';
 import { auditGarmentAssets } from './modules/laundry/garment-assets.js';
@@ -294,6 +294,19 @@ const platformOrderQuery = {
     search: { type: 'string', maxLength: 200 },
     startDate: { type: 'string', maxLength: 40 },
     endDate: { type: 'string', maxLength: 40 },
+    page: { type: 'integer', minimum: 1 },
+    limit: { type: 'integer', minimum: 1, maximum: 100 },
+  }, additionalProperties: false,
+} as const;
+const platformAuditQuery = {
+  type: 'object', properties: {
+    actor_user_id: { type: 'string', minLength: 1, maxLength: 160 },
+    actor_shop_id: { type: 'string', minLength: 1, maxLength: 160 },
+    target_type: { type: 'string', minLength: 1, maxLength: 50 },
+    target_id: { type: 'string', minLength: 1, maxLength: 160 },
+    action: { type: 'string', minLength: 1, maxLength: 80 },
+    from: { type: 'string', maxLength: 40 },
+    to: { type: 'string', maxLength: 40 },
     page: { type: 'integer', minimum: 1 },
     limit: { type: 'integer', minimum: 1, maximum: 100 },
   }, additionalProperties: false,
@@ -1030,6 +1043,12 @@ export function registerApi(app: FastifyInstance) {
   });
   app.get('/api/platform/orders/:orderId', { schema: { params: platformOrderParams }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
     try { return await getConnectedPlatformOrder(req.auth!.tenant, req.params.orderId); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  // Platform evidence is cloud-owned and append-only. This is deliberately
+  // a read-only observation surface; local Desktop audit remains separate.
+  app.get('/api/platform/audit-logs', { schema: { querystring: platformAuditQuery }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await listConnectedPlatformAuditLogs(req.auth!.tenant, req.query || {}); }
     catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   app.get('/api/marketplace/catalogue/mappings', { schema: { querystring: marketplaceCatalogueQuery }, preHandler: [guard, allow('catalogue.read')] }, async (req: any) =>

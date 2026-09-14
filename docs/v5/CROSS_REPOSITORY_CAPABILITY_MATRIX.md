@@ -612,6 +612,23 @@ integration: real bank disbursement remains `EXTERNAL_BLOCKER` until a
 provider adapter, credentials, webhook/reconciliation evidence, and operator
 workflow are introduced.
 
+**Platform audit evidence monitor.** A later Phase 3 audit found an already
+mounted, permission-enforced cloud contract that was appropriate to expose:
+`GET /api/v1/admin/audit-logs`. It is append-only, paginated (maximum 100),
+filterable by actor, target, action and time window, and requires the real
+`audit_logs.view` permission. Desktop now proxies it through
+`GET /api/platform/audit-logs` using the separate encrypted platform-admin
+session and renders `LaundryPlatformAudit.tsx` as a read-only evidence
+monitor. No cloud audit row is cached, edited, deleted, or emitted by Desktop; the
+right-side event drawer only reveals the backend-provided before/after values
+and deliberately omits IP address and user-agent fields from the operator
+surface. The local `settings.manage` gate and self-test reject a counter role
+with 403; the cloud still independently authorizes the stored ADMIN bearer.
+Live verification used the production web build with a fresh isolated local
+session against the real backend: the route listed live entries and opened a
+cloud-event evidence drawer. This creates a useful audit *reader*, not a
+second audit authority.
+
 Explicitly deferred to later Phase 3 slices, not dropped: the remaining
 Platform Control domains (commissions/fees/settlements, promotions, approvals, support,
 exceptions, analytics, configuration, audit) and the Vendor Business
