@@ -36,7 +36,7 @@ function mockFetch(): typeof fetch {
     }
     if (path === '/vendors/admin/application-001' && method === 'GET') {
       assert.equal(authorization, 'Bearer platform-access-token');
-      return json(200, { success: true, data: { id: 'application-001', name: 'Pending Laundry', owner_name: 'Pending Owner', status: 'DRAFT', requested_service_radius_km: 7, requested_daily_capacity: 40, documents: [{ id: 'document-001', document_type: 'GST_CERTIFICATE', status: 'PENDING' }] } });
+      return json(200, { success: true, data: { id: 'application-001', name: 'Pending Laundry', owner_name: 'Pending Owner', status: 'DRAFT', requested_service_radius_km: 7, requested_daily_capacity: 40, bank_account_number: '111122223333', bank_ifsc: 'TEST0000123', bank_name: 'Test Bank', bank_holder_name: 'Pending Owner', gst_number: '22AAAAA0000A1Z5', pan_number: 'AAAAA0000A', documents: [{ id: 'document-001', document_type: 'GST_CERTIFICATE', file_url: 'private://documents/secret-file', status: 'PENDING' }] } });
     }
     if (path === '/vendors/admin/application-001/review' && method === 'POST') {
       assert.equal(authorization, 'Bearer platform-access-token');
@@ -98,6 +98,11 @@ try {
   const detail = await app.inject({ method: 'GET', url: '/api/platform/vendors/application-001', headers: ownerHeaders });
   assert.equal(detail.statusCode, 200);
   assert.equal(detail.json().documents[0].document_type, 'GST_CERTIFICATE', 'application document metadata remains cloud-owned');
+  assert.equal(detail.json().bank_details_recorded, true, 'Desktop receives a bank-review signal rather than an account number');
+  assert.deepEqual(detail.json().tax_identifiers_recorded, { gst: true, pan: true }, 'Desktop receives tax-identifier presence only');
+  assert.equal('bank_account_number' in detail.json(), false, 'raw bank account data never crosses the Desktop edge');
+  assert.equal('gst_number' in detail.json(), false, 'raw GSTIN never crosses the Desktop edge');
+  assert.equal('file_url' in detail.json().documents[0], false, 'private document locations never cross the Desktop edge');
 
   const review = await app.inject({ method: 'POST', url: '/api/platform/vendors/application-001/review', headers: ownerHeaders, payload: { status: 'CORRECTION_REQUIRED', rejectionReason: 'Please provide a readable GST certificate.', correctionSections: ['documents'] } });
   assert.equal(review.statusCode, 200, 'review action reaches the real-review proxy only after a platform connection exists');

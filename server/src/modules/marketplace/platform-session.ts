@@ -314,16 +314,49 @@ export async function listConnectedPlatformVendors(tenant: string, filters: Plat
   return callConnectedPlatformApi(tenant, vendorListPath(filters), fetchImpl);
 }
 
-/** Full application/vendor record including document metadata. */
+/**
+ * Desktop needs proof that a vendor supplied review-critical details, not a
+ * second copy of account, PAN, GSTIN, or private document URLs. Keep those
+ * fields in the platform service; send only minimal verification signals
+ * across the cloud/edge boundary. This is deliberately applied to both
+ * reads and review responses because the backend returns full rows after a
+ * successful review.
+ */
+function sanitizePlatformVendorRecord(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const record = { ...value } as Record<string, unknown>;
+  const bankDetailsRecorded = Boolean(record.bank_account_number && record.bank_ifsc);
+  const taxIdentifiersRecorded = {
+    gst: Boolean(record.gst_number),
+    pan: Boolean(record.pan_number),
+  };
+  delete record.bank_account_number;
+  delete record.bank_ifsc;
+  delete record.bank_name;
+  delete record.bank_holder_name;
+  delete record.gst_number;
+  delete record.pan_number;
+  if (Array.isArray(record.documents)) {
+    record.documents = record.documents.map((document) => {
+      if (!isRecord(document)) return document;
+      const safeDocument = { ...document } as Record<string, unknown>;
+      delete safeDocument.file_url;
+      return safeDocument;
+    });
+  }
+  return { ...record, bank_details_recorded: bankDetailsRecorded, tax_identifiers_recorded: taxIdentifiersRecorded };
+}
+
+/** Full application/vendor record including minimal document metadata. */
 export async function getConnectedPlatformVendor(tenant: string, vendorId: string, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
-  return callConnectedPlatformApi(tenant, `/vendors/admin/${encodeURIComponent(vendorId)}`, fetchImpl);
+  return sanitizePlatformVendorRecord(await callConnectedPlatformApi(tenant, `/vendors/admin/${encodeURIComponent(vendorId)}`, fetchImpl));
 }
 
 /** Review is intentionally cloud-authoritative: Desktop does not cache or
  * locally invent a status transition. A caller must invalidate its review
  * queue only after this real ADMIN-gated backend write succeeds. */
 export async function reviewConnectedPlatformVendor(tenant: string, vendorId: string, input: PlatformVendorReviewInput, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
-  return writeConnectedPlatformApi(tenant, 'POST', `/vendors/admin/${encodeURIComponent(vendorId)}/review`, input, fetchImpl);
+  return sanitizePlatformVendorRecord(await writeConnectedPlatformApi(tenant, 'POST', `/vendors/admin/${encodeURIComponent(vendorId)}/review`, input, fetchImpl));
 }
 
 function platformOrderListPath(filters: PlatformOrderListFilters = {}): string {

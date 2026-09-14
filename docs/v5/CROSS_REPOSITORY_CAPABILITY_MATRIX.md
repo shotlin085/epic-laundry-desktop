@@ -549,6 +549,21 @@ could use without reviewing its contents. The proxy type can carry
 until then this is an explicit security/usability deferment, not a missing
 state disguised as KYC completion.
 
+**Vendor-review data minimization recovery.** The detailed vendor endpoint
+returns the backend's complete application row, including sensitive account,
+tax-identifier and document-location fields. A Desktop reviewer needs to
+know only whether the required bank and tax evidence was supplied, not the
+account number, IFSC, bank name, account holder, GSTIN, PAN or private
+document URL. The connected Desktop proxy now strips all of those fields on
+both application reads and review-write responses, replacing them with
+`bank_details_recorded` and per-identifier presence signals. Document type,
+status and rejection reason remain available for a real review decision. The
+platform service remains the only system holding the raw record. The
+contract self-test asserts the prohibited fields cannot cross the edge; a
+live proxy check against the running backend confirmed the same response
+shape. Secure per-document viewing remains explicitly deferred until a
+token-safe binary preview transport exists.
+
 **Recovery applied: pending-application suspension.** Final audit found the
 controller and service already accepted `SUSPENDED`, while the original
 `vendor_applications` check constraint omitted it. Backend migration

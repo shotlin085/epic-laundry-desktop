@@ -733,6 +733,22 @@ binary preview proxy before Desktop can honestly let an operator inspect
 content. The typed proxy contract already preserves `documentReviews` for
 that future secure slice; it does not fabricate document approval now.
 
+**Review-record privacy boundary.** `/api/platform/vendors/:vendorId` and
+the review response are now deliberately narrower than the upstream backend
+row. Before a cloud vendor record can reach the Desktop renderer, the edge
+removes bank account number, IFSC, bank name, account holder, GSTIN, PAN and
+each document's private `file_url`. It substitutes only
+`bank_details_recorded` and `tax_identifiers_recorded` booleans, while
+retaining non-sensitive application and document-status metadata necessary
+for a decision. This prevents Platform Control from becoming an accidental
+secondary KYC/bank-data store or private-document locator. The current UI
+uses those presence signals; it cannot reveal a raw tax or bank identifier.
+The sanitiser runs for both reads and post-review responses because the
+backend returns a complete record after a write. Document-content review is
+still deferred until the cloud can provide a short-lived, authorization-bound
+binary preview transport; it must not be bypassed by exposing a permanent
+storage URL at the edge.
+
 **Read-only marketplace order oversight.** The same connected platform-admin
 identity now reads the real `GET /admin/orders` directory and `GET
 /admin/orders/:id` detail through `GET /api/platform/orders` and `GET
