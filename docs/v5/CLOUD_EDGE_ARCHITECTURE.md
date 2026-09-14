@@ -709,6 +709,31 @@ handler just relabels it as `daily_limit` in its response). The webapp page
 initially read the wrong key and always showed an empty field — fixed
 before this was reported as done.
 
+**Application review extension.** Platform Control also proxies the existing
+ADMIN-only review contract as thin, connected-session calls:
+`GET /api/platform/vendors` forwards the real list filters; `GET
+/api/platform/vendors/:vendorId` returns the full cloud-owned application
+or vendor detail; and `POST /api/platform/vendors/:vendorId/review` forwards
+only the backend's supported decision payload. No application status is
+cached or made authoritative at the edge: the Desktop invalidates its
+review/detail/capacity queries only after the cloud write succeeds, and the
+server audit event records the local actor plus the requested outcome.
+
+The browser workflow is deliberately a review drawer rather than a new
+local application page: application detail, requested/approved radius,
+capacity, contact/location fields and document *metadata* stay visible over
+the queue, while Approve, Request correction, Reject and Suspend expose the
+controller-documented actions. A backend constraint discrepancy remains:
+pending `vendor_applications` rows currently reject `SUSPENDED` even though
+the review schema accepts it; existing vendors can still use that service
+path. Desktop does not fabricate a suspension success, and the backend
+migration belongs to the next recovery slice. Per-document KYC actions are
+intentionally not rendered yet. At the time of live verification there were zero application
+documents, and the backend's masked preview URL needs a future token-safe
+binary preview proxy before Desktop can honestly let an operator inspect
+content. The typed proxy contract already preserves `documentReviews` for
+that future secure slice; it does not fabricate document approval now.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple

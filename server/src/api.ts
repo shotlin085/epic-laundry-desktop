@@ -99,7 +99,7 @@ import { pullCloudOrders } from './modules/marketplace/cloud-order-sync.js';
 import { acceptCloudOrder, CloudOrderConflictError, rejectCloudOrder } from './modules/marketplace/cloud-order-actions.js';
 import { advanceCloudOrderStage, CLOUD_ORDER_STAGES, cloudProgressErrorHint, proposeCloudReconciliation, syncCloudOrderDetail, type CloudOrderStage } from './modules/marketplace/cloud-order-progress.js';
 import { fetchCloudCatalogue, updateCloudCatalogueItem, updateCloudCatalogueStock } from './modules/marketplace/cloud-catalogue.js';
-import { connectPlatformSession, disconnectPlatformSession, getPlatformSessionStatus, callConnectedPlatformApi, writeConnectedPlatformApi } from './modules/marketplace/platform-session.js';
+import { connectPlatformSession, disconnectPlatformSession, getPlatformSessionStatus, callConnectedPlatformApi, getConnectedPlatformVendor, listConnectedPlatformVendors, reviewConnectedPlatformVendor, writeConnectedPlatformApi } from './modules/marketplace/platform-session.js';
 import { renderCanonicalTaxInvoice } from './modules/gst/canonical-invoice-print.js';
 import { approveTaxPolicyRule, createTaxPolicyRule, listTaxPolicyRules, retireTaxPolicyRule, saveSupplierTaxProfile, supplierTaxProfile, taxReadiness } from './modules/gst/tax-policy.js';
 import { auditGarmentAssets } from './modules/laundry/garment-assets.js';
@@ -263,6 +263,25 @@ const platformVendorCapacityBody = {
   // endpoint (/admin/:id/slots/:slotId).
   type: 'object', required: ['max_orders_per_day'],
   properties: { max_orders_per_day: { type: 'integer', minimum: 1 } }, additionalProperties: false,
+} as const;
+const platformVendorQuery = {
+  type: 'object', properties: {
+    status: { type: 'string', maxLength: 64 },
+    search: { type: 'string', maxLength: 200 },
+    city: { type: 'string', maxLength: 120 },
+    page: { type: 'integer', minimum: 1, maximum: 100000 },
+    limit: { type: 'integer', minimum: 1, maximum: 100 },
+  }, additionalProperties: false,
+} as const;
+const platformVendorReviewBody = {
+  type: 'object', required: ['status'], properties: {
+    status: { type: 'string', enum: ['APPROVED', 'REJECTED', 'CORRECTION_REQUIRED', 'SUSPENDED'] },
+    approvedRadius: { type: 'number', minimum: 0 },
+    approvedDailyCapacity: { type: 'integer', minimum: 1 },
+    rejectionReason: { type: 'string', maxLength: 2000 },
+    correctionSections: { type: 'array', items: { type: 'string', enum: ['business', 'owner_bank', 'location', 'radius', 'documents'] }, maxItems: 5 },
+    documentReviews: { type: 'array', items: { type: 'object', required: ['documentId', 'status'], properties: { documentId: { type: 'string', minLength: 1, maxLength: 160 }, status: { type: 'string', enum: ['APPROVED', 'REJECTED'] }, rejectionReason: { type: 'string', maxLength: 2000 } }, additionalProperties: false } },
+  }, additionalProperties: false,
 } as const;
 const settlementBatchParams = { type: 'object', required: ['batchId'], properties: { batchId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false } as const;
 const payoutAttemptParams = { type: 'object', required: ['attemptId'], properties: { attemptId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false } as const;
@@ -963,13 +982,20 @@ export function registerApi(app: FastifyInstance) {
     audit(req.auth!.tenant, req.auth!.actor, 'platform:disconnected', { entity: 'platform_admin_session', row_id: req.auth!.tenant });
     return result;
   });
-  app.get('/api/platform/vendors', { preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
-    try { return await callConnectedPlatformApi(req.auth!.tenant, '/vendors/admin/list'); }
+  app.get('/api/platform/vendors', { schema: { querystring: platformVendorQuery }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await listConnectedPlatformVendors(req.auth!.tenant, req.query || {}); }
     catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   app.get('/api/platform/vendors/:vendorId', { schema: { params: platformVendorParams }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
-    try { return await callConnectedPlatformApi(req.auth!.tenant, `/vendors/admin/${encodeURIComponent(req.params.vendorId)}`); }
+    try { return await getConnectedPlatformVendor(req.auth!.tenant, req.params.vendorId); }
     catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/platform/vendors/:vendorId/review', { schema: { params: platformVendorParams, body: platformVendorReviewBody }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try {
+      const result = await reviewConnectedPlatformVendor(req.auth!.tenant, req.params.vendorId, req.body as any);
+      audit(req.auth!.tenant, req.auth!.actor, 'platform:vendor-reviewed', { entity: 'platform_vendor', row_id: req.params.vendorId, after: { status: req.body.status } });
+      return result;
+    } catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   app.get('/api/platform/vendors/:vendorId/capacity', { schema: { params: platformVendorParams }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
     try { return await callConnectedPlatformApi(req.auth!.tenant, `/vendors/admin/${encodeURIComponent(req.params.vendorId)}/capacity`); }

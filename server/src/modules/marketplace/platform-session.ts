@@ -35,6 +35,28 @@ export type PlatformAdminConnectionStatus = {
   connectedAt?: string;
 };
 
+/** The real `/vendors/admin/:id/review` request contract. These are kept
+ * camel-cased because that is the backend's actual Fastify schema, not a
+ * Desktop-only translation. Document review values are supported by the
+ * proxy even though the UI deliberately defers document-level decisions
+ * until it has a safe document-preview transport. */
+export type PlatformVendorReviewInput = {
+  status: 'APPROVED' | 'REJECTED' | 'CORRECTION_REQUIRED' | 'SUSPENDED';
+  approvedRadius?: number;
+  approvedDailyCapacity?: number;
+  rejectionReason?: string;
+  correctionSections?: Array<'business' | 'owner_bank' | 'location' | 'radius' | 'documents'>;
+  documentReviews?: Array<{ documentId: string; status: 'APPROVED' | 'REJECTED'; rejectionReason?: string }>;
+};
+
+export type PlatformVendorListFilters = {
+  status?: string;
+  search?: string;
+  city?: string;
+  page?: number;
+  limit?: number;
+};
+
 function cloudApiBaseUrl(): string | undefined {
   const value = String(process.env.EPIC_MARKETPLACE_CLOUD_API_URL || '').trim();
   return value || undefined;
@@ -219,4 +241,31 @@ export async function writeConnectedPlatformApi(tenant: string, method: 'POST' |
   const { baseUrl, accessToken } = connectedPlatformCall(tenant);
   const body = await callCloud(fetchImpl, baseUrl, path, { method, body: requestBody, accessToken });
   return body.data ?? body;
+}
+
+function vendorListPath(filters: PlatformVendorListFilters = {}): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') query.set(key, String(value));
+  }
+  const suffix = query.toString();
+  return `/vendors/admin/list${suffix ? `?${suffix}` : ''}`;
+}
+
+/** Read the real combined vendor/application review queue. The backend owns
+ * filtering and merges non-approved applications with active vendors. */
+export async function listConnectedPlatformVendors(tenant: string, filters: PlatformVendorListFilters = {}, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  return callConnectedPlatformApi(tenant, vendorListPath(filters), fetchImpl);
+}
+
+/** Full application/vendor record including document metadata. */
+export async function getConnectedPlatformVendor(tenant: string, vendorId: string, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  return callConnectedPlatformApi(tenant, `/vendors/admin/${encodeURIComponent(vendorId)}`, fetchImpl);
+}
+
+/** Review is intentionally cloud-authoritative: Desktop does not cache or
+ * locally invent a status transition. A caller must invalidate its review
+ * queue only after this real ADMIN-gated backend write succeeds. */
+export async function reviewConnectedPlatformVendor(tenant: string, vendorId: string, input: PlatformVendorReviewInput, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  return writeConnectedPlatformApi(tenant, 'POST', `/vendors/admin/${encodeURIComponent(vendorId)}/review`, input, fetchImpl);
 }

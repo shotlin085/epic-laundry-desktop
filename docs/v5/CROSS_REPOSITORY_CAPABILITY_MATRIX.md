@@ -454,7 +454,7 @@ than assumed: every write route for it is platform-ADMIN-only
 (`vendors.routes.js`'s `/admin/*` prefix) — there is no vendor-facing
 backend endpoint to build a Desktop UI against yet.
 
-### 5d. Platform Control, first slice — real platform-admin login + vendor directory + capacity (2026-09-13)
+### 5d. Platform Control — real platform-admin login, capacity, and vendor application review (2026-09-13)
 
 Phase 3 of the V5.1 5-phase plan. Initial premise going in — that
 `admin/auth/auth.routes.js` was dead, never-mounted code, the same pattern as
@@ -511,9 +511,58 @@ data. The one live edit made during verification (a real vendor's
 `operating_hours.max_orders_per_day`, set to 75 to prove the round-trip) was
 reverted directly in Postgres back to its original unset state afterward.
 
+**Second Phase 3 slice: cloud-authoritative vendor application review.** The
+same Platform Control session now proxies the existing backend review
+workflow without recreating an approval state in SQLite:
+`GET /vendors/admin/list?status=&search=&city=&page=&limit=`, `GET
+/vendors/admin/:id`, and `POST /vendors/admin/:id/review`. The Desktop
+route schemas preserve the backend's real camel-case payload (`status`,
+`approvedRadius`, `approvedDailyCapacity`, `rejectionReason`,
+`correctionSections`, and future `documentReviews`) and reject malformed
+states before a cloud call. The UI is a filterable review queue and a
+right-side application drawer with the four controller-documented decisions:
+Approve, Request correction, Reject, and Suspend. Approval presents the
+radius/capacity decision explicitly; reject/correction requires a human
+reason; correction sections are constrained to the backend's supported
+business/owner-bank/location/radius/documents vocabulary.
+
+Live verification created one isolated DRAFT application plus isolated
+owner in Postgres, opened it from the actual built Desktop UI, approved it
+with an approved radius of 12 km and capacity of 48, and confirmed the
+backend promoted it to an `APPROVED`, active vendor with a `VENDOR_OWNER`
+employee record. The temporary application, vendor, employee record, and
+owner were then deleted in one cleanup transaction; a direct post-cleanup
+query returned zero of each. Separately, an actual existing VENDOR_OWNER
+obtained a real token through the development OTP path and received `403`
+from `/vendors/admin/list`. `test:marketplace-platform-control` covers the
+not-connected fail-closed path, filter forwarding, detail metadata, exact
+review-body forwarding, and the local `settings.manage` guard.
+
+**Document-review decision, evidence based.** The live database had zero
+vendor-application documents. More importantly, the backend masks each
+document URL behind a remote internal preview path, while Desktop has no
+token-safe binary-document proxy or rendered preview surface yet. The
+drawer therefore shows real document metadata/status but intentionally does
+not expose a pretend per-document approve/reject button that an operator
+could use without reviewing its contents. The proxy type can carry
+`documentReviews` when that later slice adds the secure preview transport;
+until then this is an explicit security/usability deferment, not a missing
+state disguised as KYC completion.
+
+**Backend constraint discrepancy found during final audit.** The controller
+accepts `SUSPENDED` for `/vendors/admin/:id/review`, and the service handles
+it for an existing vendor, but the current `vendor_applications` database
+check constraint only allows `DRAFT`, `WAITING_FOR_APPROVAL`,
+`CORRECTION_REQUIRED`, `APPROVED`, and `REJECTED`. Therefore a pending
+application cannot actually be suspended without a backend migration even
+though the public request schema advertises it. This is a `BUG` in the real
+backend contract, not a Desktop state to invent or a condition to hide with
+a false success. It is explicitly carried into the next backend recovery
+slice; approval, rejection and correction are verified operational now.
+
 Explicitly deferred to later Phase 3 slices, not dropped: the remaining
-Platform Control domains (marketplace orders oversight, vendor applications
-review, commissions/fees/settlements, promotions, approvals, support,
+Platform Control domains (marketplace orders oversight, commissions/fees/
+settlements, promotions, approvals, support,
 exceptions, analytics, configuration, audit) and the Vendor Business
 workspace's own expansion (riders, staff, vendor-facing evidence/photos,
 finance, settlements, ratings, support, performance analytics — several may
