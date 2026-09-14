@@ -42,6 +42,14 @@ function mockFetch(): typeof fetch {
       assert.equal(authorization, 'Bearer platform-access-token');
       return json(200, { success: true, data: { id: 'application-001', name: 'Pending Laundry', status: (body as any).status, correction_sections: (body as any).correctionSections, rejection_reason: (body as any).rejectionReason } });
     }
+    if (path === '/admin/orders?status=OUT_FOR_DELIVERY&search=ORD-1&limit=50&page=1' && method === 'GET') {
+      assert.equal(authorization, 'Bearer platform-access-token');
+      return json(200, { success: true, data: { orders: [{ id: 'order-001', order_number: 'ORD-1', status: 'OUT_FOR_DELIVERY', customer_name: 'Asha', total_amount: '475.00', payment_status: 'PAID' }], pagination: { page: 1, limit: 50, total: 1, totalPages: 1 } } });
+    }
+    if (path === '/admin/orders/order-001' && method === 'GET') {
+      assert.equal(authorization, 'Bearer platform-access-token');
+      return json(200, { success: true, data: { id: 'order-001', order_number: 'ORD-1', status: 'OUT_FOR_DELIVERY', customer_name: 'Asha', items: [{ name: 'Shirt', quantity: 2 }], timeline: [{ to_status: 'OUT_FOR_DELIVERY', changed_at: '2026-09-14T10:00:00.000Z', actor_role: 'RIDER' }] } });
+    }
     throw new Error(`unexpected platform mock call: ${method} ${path}`);
   }) as unknown as typeof fetch;
 }
@@ -81,14 +89,23 @@ try {
   const remoteReview = calls.find((call) => call.path === '/vendors/admin/application-001/review');
   assert.deepEqual(remoteReview?.body, { status: 'CORRECTION_REQUIRED', rejectionReason: 'Please provide a readable GST certificate.', correctionSections: ['documents'] }, 'the Desktop preserves the backend camel-case review contract exactly');
 
+  const orderList = await app.inject({ method: 'GET', url: '/api/platform/orders?status=OUT_FOR_DELIVERY&search=ORD-1&limit=50&page=1', headers: ownerHeaders });
+  assert.equal(orderList.statusCode, 200, 'platform order oversight proxies the real cloud admin directory read-only');
+  assert.equal(orderList.json().orders[0].order_number, 'ORD-1');
+  const orderDetail = await app.inject({ method: 'GET', url: '/api/platform/orders/order-001', headers: ownerHeaders });
+  assert.equal(orderDetail.statusCode, 200, 'platform order oversight reads the cloud-owned order detail');
+  assert.equal(orderDetail.json().timeline[0].actor_role, 'RIDER');
+
   const staff = await app.inject({ method: 'POST', url: '/api/settings/staff', headers: ownerHeaders, payload: { username: 'platform-counter', password: 'PlatformCounterPassword!26', roles: ['counter_staff'], firstName: 'Platform', lastName: 'Counter' } });
   assert.equal(staff.statusCode, 201);
   const counter = signIn('platform-counter', 'PlatformCounterPassword!26');
   const denied = await app.inject({ method: 'GET', url: '/api/platform/vendors', headers: { cookie: `epic_session=${counter.token}` } });
   assert.equal(denied.statusCode, 403, 'a local counter role cannot access the platform review proxy');
+  const deniedOrders = await app.inject({ method: 'GET', url: '/api/platform/orders', headers: { cookie: `epic_session=${counter.token}` } });
+  assert.equal(deniedOrders.statusCode, 403, 'a local counter role cannot access the platform order monitor');
 
   await app.close();
-  console.log('PASS platform vendor review: connected admin session, filtered queue, application detail, cloud-authoritative correction request, and local permission guard complete');
+  console.log('PASS platform control: connected admin session, vendor review, read-only marketplace order oversight, and local permission guards complete');
 } finally {
   globalThis.fetch = originalFetch;
   delete process.env.EPIC_MARKETPLACE_CLOUD_API_URL;

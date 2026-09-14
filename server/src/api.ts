@@ -99,7 +99,7 @@ import { pullCloudOrders } from './modules/marketplace/cloud-order-sync.js';
 import { acceptCloudOrder, CloudOrderConflictError, rejectCloudOrder } from './modules/marketplace/cloud-order-actions.js';
 import { advanceCloudOrderStage, CLOUD_ORDER_STAGES, cloudProgressErrorHint, proposeCloudReconciliation, syncCloudOrderDetail, type CloudOrderStage } from './modules/marketplace/cloud-order-progress.js';
 import { fetchCloudCatalogue, updateCloudCatalogueItem, updateCloudCatalogueStock } from './modules/marketplace/cloud-catalogue.js';
-import { connectPlatformSession, disconnectPlatformSession, getPlatformSessionStatus, callConnectedPlatformApi, getConnectedPlatformVendor, listConnectedPlatformVendors, reviewConnectedPlatformVendor, writeConnectedPlatformApi } from './modules/marketplace/platform-session.js';
+import { connectPlatformSession, disconnectPlatformSession, getPlatformSessionStatus, callConnectedPlatformApi, getConnectedPlatformOrder, getConnectedPlatformVendor, listConnectedPlatformOrders, listConnectedPlatformVendors, reviewConnectedPlatformVendor, writeConnectedPlatformApi } from './modules/marketplace/platform-session.js';
 import { renderCanonicalTaxInvoice } from './modules/gst/canonical-invoice-print.js';
 import { approveTaxPolicyRule, createTaxPolicyRule, listTaxPolicyRules, retireTaxPolicyRule, saveSupplierTaxProfile, supplierTaxProfile, taxReadiness } from './modules/gst/tax-policy.js';
 import { auditGarmentAssets } from './modules/laundry/garment-assets.js';
@@ -281,6 +281,21 @@ const platformVendorReviewBody = {
     rejectionReason: { type: 'string', maxLength: 2000 },
     correctionSections: { type: 'array', items: { type: 'string', enum: ['business', 'owner_bank', 'location', 'radius', 'documents'] }, maxItems: 5 },
     documentReviews: { type: 'array', items: { type: 'object', required: ['documentId', 'status'], properties: { documentId: { type: 'string', minLength: 1, maxLength: 160 }, status: { type: 'string', enum: ['APPROVED', 'REJECTED'] }, rejectionReason: { type: 'string', maxLength: 2000 } }, additionalProperties: false } },
+  }, additionalProperties: false,
+} as const;
+const platformOrderParams = {
+  type: 'object', required: ['orderId'],
+  properties: { orderId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false,
+} as const;
+const platformOrderQuery = {
+  type: 'object', properties: {
+    status: { type: 'string', maxLength: 80 },
+    paymentMethod: { type: 'string', maxLength: 80 },
+    search: { type: 'string', maxLength: 200 },
+    startDate: { type: 'string', maxLength: 40 },
+    endDate: { type: 'string', maxLength: 40 },
+    page: { type: 'integer', minimum: 1 },
+    limit: { type: 'integer', minimum: 1, maximum: 100 },
   }, additionalProperties: false,
 } as const;
 const settlementBatchParams = { type: 'object', required: ['batchId'], properties: { batchId: { type: 'string', minLength: 1, maxLength: 160 } }, additionalProperties: false } as const;
@@ -1003,6 +1018,18 @@ export function registerApi(app: FastifyInstance) {
   });
   app.put('/api/platform/vendors/:vendorId/capacity', { schema: { params: platformVendorParams, body: platformVendorCapacityBody }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
     try { return await writeConnectedPlatformApi(req.auth!.tenant, 'PUT', `/vendors/admin/${encodeURIComponent(req.params.vendorId)}/capacity`, req.body as any); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  // Order oversight stays deliberately read-only. The cloud's canonical
+  // vendor/rider lifecycle is the authority for pickup, delivery, OTP and
+  // payment transitions; this Desktop screen must not route around it via
+  // older broad admin-write endpoints.
+  app.get('/api/platform/orders', { schema: { querystring: platformOrderQuery }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await listConnectedPlatformOrders(req.auth!.tenant, req.query || {}); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.get('/api/platform/orders/:orderId', { schema: { params: platformOrderParams }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await getConnectedPlatformOrder(req.auth!.tenant, req.params.orderId); }
     catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   app.get('/api/marketplace/catalogue/mappings', { schema: { querystring: marketplaceCatalogueQuery }, preHandler: [guard, allow('catalogue.read')] }, async (req: any) =>

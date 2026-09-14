@@ -559,9 +559,25 @@ through the built Desktop drawer; both round-tripped as `SUSPENDED` and all
 temporary rows were removed afterwards. Suspend is now a real option for a
 pending application, not a deceptive control.
 
+**Third Phase 3 slice: safe marketplace-order oversight.** An audit of the
+real backend found that its canonical vendor/rider lifecycle is represented
+by `utils/state-machine.js` and the `vendor-orders`/delivery surfaces
+(`WAITING_VENDOR_CONFIRMATION → VENDOR_ACCEPTED → pickup → processing →
+PACKED → delivery → DELIVERED`), while older `/admin/orders` *write* routes
+still expose a shorter, incompatible progression. This is a `BUG`, not a
+licence for Desktop to choose one silently. Desktop therefore adds only
+connected-session, ADMIN-gated read proxies for `GET /admin/orders` and
+`GET /admin/orders/:id`, rendered by `LaundryPlatformOrders.tsx` as a
+filterable, paginated cloud monitor and a right-side detail/timeline drawer.
+It deliberately has no status, rider, payment, OTP, or bulk-action write
+control. The UI says why: vendors/riders remain the operational source until
+the backend's legacy admin writer is converged with the canonical lifecycle.
+The contract test verifies exact filter forwarding, detail/timeline access,
+not-connected fail-closed behavior, and that a local counter role receives
+403 for the monitor as well as vendor review.
+
 Explicitly deferred to later Phase 3 slices, not dropped: the remaining
-Platform Control domains (marketplace orders oversight, commissions/fees/
-settlements, promotions, approvals, support,
+Platform Control domains (commissions/fees/settlements, promotions, approvals, support,
 exceptions, analytics, configuration, audit) and the Vendor Business
 workspace's own expansion (riders, staff, vendor-facing evidence/photos,
 finance, settlements, ratings, support, performance analytics — several may

@@ -733,6 +733,21 @@ binary preview proxy before Desktop can honestly let an operator inspect
 content. The typed proxy contract already preserves `documentReviews` for
 that future secure slice; it does not fabricate document approval now.
 
+**Read-only marketplace order oversight.** The same connected platform-admin
+identity now reads the real `GET /admin/orders` directory and `GET
+/admin/orders/:id` detail through `GET /api/platform/orders` and `GET
+/api/platform/orders/:orderId`. A live code/DB audit found a material
+lifecycle split: `utils/state-machine.js` plus the vendor/rider services own
+the full physical-order state machine, but legacy platform-admin *write*
+routes still validate a shorter sequence. Desktop exposes neither writer.
+`LaundryPlatformOrders.tsx` is consequently a cloud-monitoring screen only:
+search/status filtering, pagination, amounts, vendor/rider context, items,
+and cloud event timeline in a drawer. It makes the limitation visible rather
+than allowing a deceptively powerful button that could bypass pickup, OTP,
+payment, or rider workflow. A later backend convergence slice must reconcile
+the old admin writer to the canonical state-machine before any platform
+mutation is added here.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple

@@ -57,6 +57,19 @@ export type PlatformVendorListFilters = {
   limit?: number;
 };
 
+/** Read-only filters supported by the real platform admin order directory.
+ * This deliberately mirrors the cloud API rather than inventing a second
+ * order-search grammar on the Desktop edge. */
+export type PlatformOrderListFilters = {
+  status?: string;
+  paymentMethod?: string;
+  search?: string;
+  startDate?: string;
+  endDate?: string;
+  page?: number;
+  limit?: number;
+};
+
 function cloudApiBaseUrl(): string | undefined {
   const value = String(process.env.EPIC_MARKETPLACE_CLOUD_API_URL || '').trim();
   return value || undefined;
@@ -268,4 +281,29 @@ export async function getConnectedPlatformVendor(tenant: string, vendorId: strin
  * queue only after this real ADMIN-gated backend write succeeds. */
 export async function reviewConnectedPlatformVendor(tenant: string, vendorId: string, input: PlatformVendorReviewInput, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
   return writeConnectedPlatformApi(tenant, 'POST', `/vendors/admin/${encodeURIComponent(vendorId)}/review`, input, fetchImpl);
+}
+
+function platformOrderListPath(filters: PlatformOrderListFilters = {}): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') query.set(key, String(value));
+  }
+  const suffix = query.toString();
+  return `/admin/orders${suffix ? `?${suffix}` : ''}`;
+}
+
+/**
+ * Cloud-owned, read-only marketplace order oversight. The platform's
+ * vendor/rider lifecycle is richer than its legacy admin write routes, so
+ * this monitor intentionally cannot alter status, rider, payment, or OTP
+ * state. It is safe to expose while lifecycle convergence is completed.
+ */
+export async function listConnectedPlatformOrders(tenant: string, filters: PlatformOrderListFilters = {}, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  return callConnectedPlatformApi(tenant, platformOrderListPath(filters), fetchImpl);
+}
+
+/** Full cloud order record, including the backend-provided timeline/payment
+ * and delivery sections. Kept read-only for the same lifecycle-safety rule. */
+export async function getConnectedPlatformOrder(tenant: string, orderId: string, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  return callConnectedPlatformApi(tenant, `/admin/orders/${encodeURIComponent(orderId)}`, fetchImpl);
 }

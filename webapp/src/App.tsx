@@ -34,6 +34,7 @@ const LaundryRoutes = lazy(() => import("@/pages/laundry/LaundryRoutes"));
 const LaundryOnlineOrders = lazy(() => import("@/pages/laundry/LaundryOnlineOrders"));
 const LaundryMarketplaceCatalogue = lazy(() => import("@/pages/laundry/LaundryMarketplaceCatalogue"));
 const LaundryPlatformControl = lazy(() => import("@/pages/laundry/LaundryPlatformControl"));
+const LaundryPlatformOrders = lazy(() => import("@/pages/laundry/LaundryPlatformOrders"));
 const LaundrySyncStatus = lazy(() => import("@/pages/laundry/LaundrySyncStatus"));
 const LaundryOperationsHub = lazy(() => import("@/pages/laundry/LaundryOperationsHub"));
 const LaundryFinanceCommandCenter = lazy(() => import("@/pages/laundry/LaundryFinanceCommandCenter"));
@@ -65,6 +66,7 @@ export function App() {
         <Route path="online-orders" element={<PermissionGate permission="orders.read"><LaundryOnlineOrders /></PermissionGate>} />
         <Route path="marketplace-catalogue" element={<PermissionGate permission="catalogue.read"><LaundryMarketplaceCatalogue /></PermissionGate>} />
         <Route path="platform-control" element={<PermissionGate permission="settings.manage"><LaundryPlatformControl /></PermissionGate>} />
+        <Route path="platform-orders" element={<PermissionGate permission="settings.manage"><LaundryPlatformOrders /></PermissionGate>} />
         <Route path="sync-status" element={<PermissionGate permission="settings.manage"><LaundrySyncStatus /></PermissionGate>} />
         <Route path="garment-tracking" element={<PermissionGate permission="garments.read"><LaundryGarmentTracking /></PermissionGate>} />
         <Route path="cash-closing" element={<PermissionGate permission="cash.read"><LaundryCashClosing /></PermissionGate>} />
