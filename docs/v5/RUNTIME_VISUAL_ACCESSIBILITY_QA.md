@@ -74,3 +74,15 @@ The next Phase 4 slice should exercise interaction states that screenshots
 cannot prove: keyboard tab order and focus return for drawers/dialogs,
 empty/error/retry states, and native Electron packaging/hardware paths where
 a real Windows app window and devices are available.
+
+## Follow-up interaction recovery
+
+The first interaction audit found that the customer work-card drawer used
+`aria-modal="true"` but did not initially place focus inside the dialog,
+trap Tab navigation, or restore the invoking control on dismissal. That is a
+real keyboard and screen-reader defect, not cosmetic polish. The drawer now
+focuses its close control after mount, cycles focus within its own interactive
+content, and returns focus to the exact customer-row trigger after close or
+Escape. The runtime regression test verifies all four behaviours. The next
+drawer-focused slice should apply the same evidence standard to the order
+work card and any other custom modal surface.

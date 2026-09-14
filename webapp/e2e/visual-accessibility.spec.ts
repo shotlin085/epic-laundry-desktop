@@ -63,3 +63,26 @@ test('reduced motion and primary operator surfaces remain accessible', async ({ 
     await expect(page.getByText(area[1], { exact: false }).first()).toBeVisible()
   }
 })
+
+test('customer work card traps focus and restores it when dismissed', async ({ page }) => {
+  await signIntoDemo(page)
+  await page.goto('/ui/app/#/laundry/orders?view=customers', { waitUntil: 'domcontentloaded' })
+  const trigger = page.getByRole('button', { name: 'Open profile' }).first()
+  await expect(trigger).toBeVisible()
+  await trigger.focus()
+  await trigger.click()
+
+  const drawer = page.getByRole('dialog').filter({ hasText: 'Customer work card' })
+  const close = drawer.getByRole('button', { name: 'Close customer work card' })
+  await expect(drawer).toBeVisible()
+  await expect(close).toBeFocused()
+
+  // The activity tab contains only the close control and three section tabs;
+  // after repeated forward navigation focus must still be in the modal.
+  for (let index = 0; index < 8; index += 1) await page.keyboard.press('Tab')
+  await expect(drawer.locator(':focus')).toHaveCount(1)
+
+  await page.keyboard.press('Escape')
+  await expect(drawer).toBeHidden()
+  await expect(trigger).toBeFocused()
+})

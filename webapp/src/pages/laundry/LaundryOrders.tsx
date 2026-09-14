@@ -26,7 +26,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { apiGet, apiPatch, apiPost, operatorErrorMessage } from "@/lib/api";
 import {
@@ -404,8 +404,41 @@ function CustomerTable({ rows, loading, onOpen }: { rows: Array<{ customer: Cust
   return <div className="overflow-x-auto"><table className="w-full min-w-[940px] text-left text-sm"><thead className="bg-[#fafaf7] text-[10px] font-bold uppercase tracking-[.14em] text-[#718087]"><tr><th className="px-5 py-3">Customer</th><th className="px-3 py-3">Phone</th><th className="px-3 py-3">Orders</th><th className="px-3 py-3">Total spent</th><th className="px-3 py-3">Last activity</th><th className="px-3 py-3">Contact</th><th className="px-5 py-3 text-right">Action</th></tr></thead><tbody>{loading ? <tr><td colSpan={7} className="py-16 text-center"><Loader2 className="mx-auto h-5 w-5 animate-spin text-brand-600" /></td></tr> : rows.length ? rows.map(({ customer, metric }) => <tr key={customer.id} className="border-t border-[#263f44]/8 transition hover:bg-[#faf9ff]"><td className="px-5 py-4"><button type="button" onClick={() => onOpen(customer.id)} className="font-semibold text-brand-700 hover:underline">{customer.name || "Unnamed customer"}</button><span className="mt-1 block max-w-[260px] truncate text-xs text-[#718087]">{customer.email || customer.address || "No additional contact recorded"}</span></td><td className="px-3 py-4 text-[#40565a]">{customer.phone || "—"}</td><td className="px-3 py-4 font-semibold tabular-nums">{metric?.orderCount || 0}</td><td className="px-3 py-4 font-semibold tabular-nums">{formatINR(metric?.revenue || 0)}</td><td className="px-3 py-4 text-xs text-[#617178]">{metric?.lastOrderDate || "No order date"}</td><td className="px-3 py-4"><span className={cn("rounded-full px-2 py-1 text-[10px] font-bold", metric?.contactEligible ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700")}>{metric?.contactEligible ? "Contactable" : "Restricted"}</span></td><td className="px-5 py-4 text-right"><button type="button" onClick={() => onOpen(customer.id)} className="rounded-lg border border-brand-200 bg-white px-2.5 py-1.5 text-xs font-bold text-brand-700 hover:bg-brand-50">Open profile</button></td></tr>) : <tr><td colSpan={7}><VisualEmptyState kind="customers" compact title="No customers match these filters" detail="Clear a filter or create a new customer account from the customer directory." /></td></tr>}</tbody></table></div>;
 }
 
+function useDrawerFocus() {
+  const drawerRef = useRef<HTMLElement>(null);
+  const initialFocusRef = useRef<HTMLButtonElement>(null);
+  const priorFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    priorFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = window.requestAnimationFrame(() => initialFocusRef.current?.focus());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (priorFocusRef.current?.isConnected) priorFocusRef.current.focus();
+    };
+  }, []);
+
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(drawerRef.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || []).filter((element) => !element.hasAttribute("hidden"));
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  return { drawerRef, initialFocusRef, onKeyDown };
+}
+
 function CustomerWorkCardDrawer({ id, onClose, onOpenOrder }: { id: string; onClose: () => void; onOpenOrder: (id: string) => void }) {
   const [section, setSection] = useState<"activity" | "orders" | "ledger">("activity");
+  const { drawerRef, initialFocusRef, onKeyDown } = useDrawerFocus();
   const profile = useQuery({
     queryKey: ["laundry-customer-work-card", id],
     queryFn: () => apiGet<CustomerDrawerProfile>(`/laundry/customers/${id}`),
@@ -430,7 +463,7 @@ function CustomerWorkCardDrawer({ id, onClose, onOpenOrder }: { id: string; onCl
 
   return <>
     <button type="button" aria-label="Close customer work card" onClick={onClose} className="fixed inset-0 z-40 cursor-default bg-[#171024]/65 backdrop-blur-[2px]" />
-    <aside role="dialog" aria-modal="true" aria-labelledby="customer-work-card-title" className="fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-[#272043]/10 bg-[#fffdfb] shadow-[-22px_0_60px_rgba(32,23,60,.22)] animate-in slide-in-from-right duration-300 sm:w-[min(34vw,560px)] sm:min-w-[440px]">
+    <aside ref={drawerRef} onKeyDown={onKeyDown} role="dialog" aria-modal="true" aria-labelledby="customer-work-card-title" className="fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-[#272043]/10 bg-[#fffdfb] shadow-[-22px_0_60px_rgba(32,23,60,.22)] animate-in slide-in-from-right duration-300 sm:w-[min(34vw,560px)] sm:min-w-[440px]">
       <header className="relative overflow-hidden border-b border-[#272043]/10 bg-[#fcfbff] px-5 py-5">
         <div className="pointer-events-none absolute -left-14 -top-16 h-36 w-36 rounded-full bg-brand-100/75 blur-2xl" />
         <div className="relative flex items-start justify-between gap-4">
@@ -438,7 +471,7 @@ function CustomerWorkCardDrawer({ id, onClose, onOpenOrder }: { id: string; onCl
             <p className="text-[10px] font-extrabold uppercase tracking-[.17em] text-brand-700">Customer work card</p>
             {profile.isLoading ? <div className="mt-2 h-7 w-48 animate-pulse rounded bg-brand-100" /> : <><h2 id="customer-work-card-title" className="mt-1 truncate font-serif text-2xl text-[#21183d]">{customer?.name || "Customer profile"}</h2><p className="mt-1 text-sm text-[#6d6682]">{customer?.phone || "No phone recorded"}{customer?.email ? ` · ${customer.email}` : ""}</p></>}
           </div>
-          <button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-[#272043]/10 bg-white text-[#554d6d] transition hover:bg-brand-50 hover:text-brand-800" aria-label="Close customer work card"><X className="h-4 w-4" /></button>
+          <button ref={initialFocusRef} type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-[#272043]/10 bg-white text-[#554d6d] transition hover:bg-brand-50 hover:text-brand-800" aria-label="Close customer work card"><X className="h-4 w-4" /></button>
         </div>
       </header>
       {profile.isLoading ? <div className="grid flex-1 place-items-center"><Loader2 className="h-5 w-5 animate-spin text-brand-600" /></div> : profile.isError || !profile.data ? <div className="m-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800"><p className="font-bold">Customer details could not be loaded.</p><p className="mt-1 text-xs">Close this card, then try again from the customer list.</p></div> : <div className="min-h-0 flex-1 overflow-y-auto">
