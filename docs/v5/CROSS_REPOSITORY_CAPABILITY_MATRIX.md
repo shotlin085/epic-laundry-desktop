@@ -520,7 +520,7 @@ route schemas preserve the backend's real camel-case payload (`status`,
 `approvedRadius`, `approvedDailyCapacity`, `rejectionReason`,
 `correctionSections`, and future `documentReviews`) and reject malformed
 states before a cloud call. The UI is a filterable review queue and a
-right-side application drawer with the four controller-documented decisions:
+right-side application drawer with four real decisions:
 Approve, Request correction, Reject, and Suspend. Approval presents the
 radius/capacity decision explicitly; reject/correction requires a human
 reason; correction sections are constrained to the backend's supported
@@ -549,16 +549,15 @@ could use without reviewing its contents. The proxy type can carry
 until then this is an explicit security/usability deferment, not a missing
 state disguised as KYC completion.
 
-**Backend constraint discrepancy found during final audit.** The controller
-accepts `SUSPENDED` for `/vendors/admin/:id/review`, and the service handles
-it for an existing vendor, but the current `vendor_applications` database
-check constraint only allows `DRAFT`, `WAITING_FOR_APPROVAL`,
-`CORRECTION_REQUIRED`, `APPROVED`, and `REJECTED`. Therefore a pending
-application cannot actually be suspended without a backend migration even
-though the public request schema advertises it. This is a `BUG` in the real
-backend contract, not a Desktop state to invent or a condition to hide with
-a false success. It is explicitly carried into the next backend recovery
-slice; approval, rejection and correction are verified operational now.
+**Recovery applied: pending-application suspension.** Final audit found the
+controller and service already accepted `SUSPENDED`, while the original
+`vendor_applications` check constraint omitted it. Backend migration
+`098_vendor_application_suspension.sql` replaces that constraint without
+rewriting history. It was run against the live Postgres database, then an
+isolated DRAFT application was suspended through the real backend and again
+through the built Desktop drawer; both round-tripped as `SUSPENDED` and all
+temporary rows were removed afterwards. Suspend is now a real option for a
+pending application, not a deceptive control.
 
 Explicitly deferred to later Phase 3 slices, not dropped: the remaining
 Platform Control domains (marketplace orders oversight, commissions/fees/

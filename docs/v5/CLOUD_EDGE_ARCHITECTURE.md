@@ -722,13 +722,12 @@ server audit event records the local actor plus the requested outcome.
 The browser workflow is deliberately a review drawer rather than a new
 local application page: application detail, requested/approved radius,
 capacity, contact/location fields and document *metadata* stay visible over
-the queue, while Approve, Request correction, Reject and Suspend expose the
-controller-documented actions. A backend constraint discrepancy remains:
-pending `vendor_applications` rows currently reject `SUSPENDED` even though
-the review schema accepts it; existing vendors can still use that service
-path. Desktop does not fabricate a suspension success, and the backend
-migration belongs to the next recovery slice. Per-document KYC actions are
-intentionally not rendered yet. At the time of live verification there were zero application
+the queue, while Approve, Request correction, Reject and Suspend map to the
+real review states. Migration `098_vendor_application_suspension.sql` closed
+the former schema/service mismatch for pending applications and was verified
+through both the real backend and the built Desktop UI; the Desktop never
+fabricates a transition locally. Per-document KYC actions are intentionally
+not rendered yet. At the time of live verification there were zero application
 documents, and the backend's masked preview URL needs a future token-safe
 binary preview proxy before Desktop can honestly let an operator inspect
 content. The typed proxy contract already preserves `documentReviews` for
