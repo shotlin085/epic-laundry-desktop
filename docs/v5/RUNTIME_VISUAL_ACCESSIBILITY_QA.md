@@ -138,3 +138,9 @@ recovery-policy, release-signature, and production-release-guard tests also
 passed. This confirms that the current web/server bundle is accepted by the
 packaging pipeline. It does not certify a native-window walkthrough, printer,
 scanner, scale, or other hardware path; those remain `NEEDS_REAL_HARDWARE`.
+
+The readiness follow-up also passed on 15 September 2026: clean database
+bootstrap, packaged-server restart with offline persistence, fresh-database
+backup/restore recovery, production/demo workspace separation, and the
+authenticated random-port startup handshake. These checks ran against
+isolated temporary state and did not alter a vendor or production workspace.
