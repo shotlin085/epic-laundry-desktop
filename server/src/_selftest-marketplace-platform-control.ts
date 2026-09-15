@@ -42,6 +42,15 @@ function mockFetch(): typeof fetch {
       assert.equal(authorization, 'Bearer platform-access-token');
       return json(200, { success: true, data: { id: 'application-001', name: 'Pending Laundry', status: (body as any).status, correction_sections: (body as any).correctionSections, rejection_reason: (body as any).rejectionReason } });
     }
+    if (path === '/admin/partner-leads?state=RECEIVED&limit=8' && method === 'GET') {
+      assert.equal(authorization, 'Bearer platform-access-token');
+      return json(200, { success: true, data: { leads: [{ id: 'partner-lead-001', business_name: 'Website Laundry', full_name: 'Website Partner', email: 'partner@example.test', phone: '+919999999999', address: 'Private customer address', message: 'Private applicant note', city: 'Kolkata', service_area: 'Salt Lake', services: ['wash-fold'], state: 'RECEIVED', received_at: '2026-09-15T09:00:00.000Z' }], total: 1, page: 1, limit: 8 } });
+    }
+    if (path === '/admin/partner-leads/partner-lead-001/claim' && method === 'POST') {
+      assert.equal(authorization, 'Bearer platform-access-token');
+      assert.deepEqual(body, {});
+      return json(200, { success: true, data: { id: 'partner-lead-001', state: 'CLAIMED', claimed_at: '2026-09-15T10:00:00.000Z' } });
+    }
     if (path === '/admin/orders?status=OUT_FOR_DELIVERY&search=ORD-1&limit=50&page=1' && method === 'GET') {
       assert.equal(authorization, 'Bearer platform-access-token');
       return json(200, { success: true, data: { orders: [{ id: 'order-001', order_number: 'ORD-1', status: 'OUT_FOR_DELIVERY', customer_name: 'Asha', total_amount: '475.00', payment_status: 'PAID' }], pagination: { page: 1, limit: 50, total: 1, totalPages: 1 } } });
@@ -110,6 +119,15 @@ try {
   const remoteReview = calls.find((call) => call.path === '/vendors/admin/application-001/review');
   assert.deepEqual(remoteReview?.body, { status: 'CORRECTION_REQUIRED', rejectionReason: 'Please provide a readable GST certificate.', correctionSections: ['documents'] }, 'the Desktop preserves the backend camel-case review contract exactly');
 
+  const partnerLeads = await app.inject({ method: 'GET', url: '/api/platform/partner-leads?state=RECEIVED&limit=8', headers: ownerHeaders });
+  assert.equal(partnerLeads.statusCode, 200, 'canonical website-partner staging queue is proxyable through the Desktop server');
+  assert.equal(partnerLeads.json().leads[0].business_name, 'Website Laundry');
+  assert.equal(partnerLeads.json().leads[0].email, undefined, 'website contact details do not cross into the Desktop process for compact queue triage');
+  assert.equal(partnerLeads.json().leads[0].message, undefined, 'free-form partner messages remain in the canonical platform workflow');
+  const claimedPartnerLead = await app.inject({ method: 'POST', url: '/api/platform/partner-leads/partner-lead-001/claim', headers: ownerHeaders });
+  assert.equal(claimedPartnerLead.statusCode, 200, 'Desktop can assign cloud-owned follow-up responsibility without creating a vendor');
+  assert.equal(claimedPartnerLead.json().state, 'CLAIMED');
+
   const orderList = await app.inject({ method: 'GET', url: '/api/platform/orders?status=OUT_FOR_DELIVERY&search=ORD-1&limit=50&page=1', headers: ownerHeaders });
   assert.equal(orderList.statusCode, 200, 'platform order oversight proxies the real cloud admin directory read-only');
   assert.equal(orderList.json().orders[0].order_number, 'ORD-1');
@@ -143,9 +161,11 @@ try {
   assert.equal(deniedAudit.statusCode, 403, 'a local counter role cannot access the platform evidence trail');
   const deniedFinance = await app.inject({ method: 'GET', url: '/api/platform/finance/vendors', headers: { cookie: `epic_session=${counter.token}` } });
   assert.equal(deniedFinance.statusCode, 403, 'a local counter role cannot access the platform finance reader');
+  const deniedPartnerLeads = await app.inject({ method: 'GET', url: '/api/platform/partner-leads', headers: { cookie: `epic_session=${counter.token}` } });
+  assert.equal(deniedPartnerLeads.statusCode, 403, 'a local counter role cannot access website partner enquiries');
 
   await app.close();
-  console.log('PASS platform control: connected admin session, vendor review, read-only order/audit/finance oversight, and local permission guards complete');
+  console.log('PASS platform control: connected admin session, vendor review, website-partner intake, read-only order/audit/finance oversight, and local permission guards complete');
 } finally {
   globalThis.fetch = originalFetch;
   delete process.env.EPIC_MARKETPLACE_CLOUD_API_URL;

@@ -47,6 +47,19 @@ attempted.
   `https://api.lndry.in/api/v1` production boundary — endpoint configuration
   is not a login or a credential), connect/status/disconnect, and at-rest
   token encryption (see §4).
+
+### Website partner-intake handoff
+
+The marketing website now has a controlled bridge to the canonical backend:
+the website stores its validated Supabase lead first, then uses a server-only
+HMAC call to create an idempotent `partner_leads` staging record in LNDRY.
+This is intentionally not vendor onboarding—no vendor, user, KYC approval, or
+marketplace access is created from a website form. The Platform Control queue
+can list and claim those cloud-owned leads for follow-up, but cannot promote
+them around the existing verified onboarding workflow. The shared secret,
+deployment URLs and Supabase migration are deployment configuration, not
+embedded Desktop credentials. See the website's
+`docs/CANONICAL_PARTNER_LEAD_HANDOFF.md` for the exact contract.
 - **Migration 37** (`marketplace-cloud-session`) — one row per store,
   `marketplace_cloud_sessions(tenant, store_id)`, storing connection status,
   the remote vendor's name/phone (for display only — never a secret), and the
@@ -750,6 +763,25 @@ backend returns a complete record after a write. Document-content review is
 still deferred until the cloud can provide a short-lived, authorization-bound
 binary preview transport; it must not be bypassed by exposing a permanent
 storage URL at the edge.
+
+**Website partner-intake queue.** A partner enquiry received from the public
+website has a different authority and evidence level from a vendor
+application. The website stores the validated submission in Supabase first,
+then uses a server-only HMAC handoff to create an idempotent
+`partner_leads` record in the backend. Desktop's connected platform session
+has only `GET /api/platform/partner-leads` and `POST
+/api/platform/partner-leads/:leadId/claim`: list staged `RECEIVED` work and
+record a real cloud follow-up owner. It cannot create a vendor or bypass
+KYC/onboarding. The proxy applies a separate minimisation step, dropping
+email, phone, address and free-form message before the row reaches local
+SQLite/React; the compact card receives only the business/contact-name,
+city/service-area, selected services, status and timestamps required to
+triage work. Both local `settings.manage` and upstream `ADMIN` controls are
+required, and claim audit follows a successful cloud mutation. A live
+Postgres verification exercised signed intake → Desktop queue → claim and
+then removed the test record and its test audit evidence. Deployment remains
+explicitly blocked until the matching website migration and server-only
+shared HMAC configuration are applied to the real services.
 
 **Read-only marketplace order oversight.** The same connected platform-admin
 identity now reads the real `GET /admin/orders` directory and `GET

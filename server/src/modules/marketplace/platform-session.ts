@@ -113,6 +113,15 @@ export type PlatformFinanceTransactionFilters = {
   limit?: number;
 };
 
+/** Website enquiries are platform staging records, never vendor applications.
+ * This filter maps directly to the real admin queue without creating a
+ * Desktop-local prospect authority. */
+export type PlatformPartnerLeadFilters = {
+  state?: 'RECEIVED' | 'CLAIMED' | 'ARCHIVED';
+  page?: number;
+  limit?: number;
+};
+
 function cloudApiBaseUrl(): string | undefined {
   const value = String(process.env.EPIC_MARKETPLACE_CLOUD_API_URL || '').trim();
   return value || undefined;
@@ -347,6 +356,29 @@ function sanitizePlatformVendorRecord(value: unknown): unknown {
   return { ...record, bank_details_recorded: bankDetailsRecorded, tax_identifiers_recorded: taxIdentifiersRecorded };
 }
 
+/**
+ * Partner-lead contact details and the applicant's free-form message belong
+ * in the canonical platform workflow. Platform Control's compact intake card
+ * needs only enough context to triage and claim work, so do not copy contact
+ * data into the store's local Desktop process just to render that queue.
+ */
+function sanitizePlatformPartnerLead(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const record = { ...value } as Record<string, unknown>;
+  delete record.email;
+  delete record.phone;
+  delete record.address;
+  delete record.message;
+  return record;
+}
+
+function sanitizePlatformPartnerLeadPage(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const page = { ...value } as Record<string, unknown>;
+  if (Array.isArray(page.leads)) page.leads = page.leads.map(sanitizePlatformPartnerLead);
+  return page;
+}
+
 /** Full application/vendor record including minimal document metadata. */
 export async function getConnectedPlatformVendor(tenant: string, vendorId: string, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
   return sanitizePlatformVendorRecord(await callConnectedPlatformApi(tenant, `/vendors/admin/${encodeURIComponent(vendorId)}`, fetchImpl));
@@ -357,6 +389,19 @@ export async function getConnectedPlatformVendor(tenant: string, vendorId: strin
  * queue only after this real ADMIN-gated backend write succeeds. */
 export async function reviewConnectedPlatformVendor(tenant: string, vendorId: string, input: PlatformVendorReviewInput, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
   return sanitizePlatformVendorRecord(await writeConnectedPlatformApi(tenant, 'POST', `/vendors/admin/${encodeURIComponent(vendorId)}/review`, input, fetchImpl));
+}
+
+/** Canonical website-partner staging queue. It remains separate from vendor
+ * onboarding because a marketing lead has not yet supplied verified identity
+ * or KYC evidence. */
+export async function listConnectedPlatformPartnerLeads(tenant: string, filters: PlatformPartnerLeadFilters = {}, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  return sanitizePlatformPartnerLeadPage(await callConnectedPlatformApi(tenant, platformFinancePath('/admin/partner-leads', filters), fetchImpl));
+}
+
+/** Claiming assigns cloud-owned follow-up responsibility only; it cannot
+ * create a vendor, a user, or an onboarding application. */
+export async function claimConnectedPlatformPartnerLead(tenant: string, leadId: string, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
+  return writeConnectedPlatformApi(tenant, 'POST', `/admin/partner-leads/${encodeURIComponent(leadId)}/claim`, {}, fetchImpl);
 }
 
 function platformOrderListPath(filters: PlatformOrderListFilters = {}): string {

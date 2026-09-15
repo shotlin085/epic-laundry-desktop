@@ -99,7 +99,7 @@ import { pullCloudOrders } from './modules/marketplace/cloud-order-sync.js';
 import { acceptCloudOrder, CloudOrderConflictError, rejectCloudOrder } from './modules/marketplace/cloud-order-actions.js';
 import { advanceCloudOrderStage, CLOUD_ORDER_STAGES, cloudProgressErrorHint, proposeCloudReconciliation, syncCloudOrderDetail, type CloudOrderStage } from './modules/marketplace/cloud-order-progress.js';
 import { fetchCloudCatalogue, updateCloudCatalogueItem, updateCloudCatalogueStock } from './modules/marketplace/cloud-catalogue.js';
-import { connectPlatformSession, disconnectPlatformSession, getPlatformSessionStatus, callConnectedPlatformApi, getConnectedPlatformOrder, getConnectedPlatformVendor, listConnectedPlatformAuditLogs, listConnectedPlatformFinanceVendors, listConnectedPlatformOrders, listConnectedPlatformVendorFinancials, listConnectedPlatformVendorTransactions, listConnectedPlatformVendors, reviewConnectedPlatformVendor, writeConnectedPlatformApi } from './modules/marketplace/platform-session.js';
+import { claimConnectedPlatformPartnerLead, connectPlatformSession, disconnectPlatformSession, getPlatformSessionStatus, callConnectedPlatformApi, getConnectedPlatformOrder, getConnectedPlatformVendor, listConnectedPlatformAuditLogs, listConnectedPlatformFinanceVendors, listConnectedPlatformOrders, listConnectedPlatformPartnerLeads, listConnectedPlatformVendorFinancials, listConnectedPlatformVendorTransactions, listConnectedPlatformVendors, reviewConnectedPlatformVendor, writeConnectedPlatformApi } from './modules/marketplace/platform-session.js';
 import { renderCanonicalTaxInvoice } from './modules/gst/canonical-invoice-print.js';
 import { approveTaxPolicyRule, createTaxPolicyRule, listTaxPolicyRules, retireTaxPolicyRule, saveSupplierTaxProfile, supplierTaxProfile, taxReadiness } from './modules/gst/tax-policy.js';
 import { auditGarmentAssets } from './modules/laundry/garment-assets.js';
@@ -272,6 +272,14 @@ const platformVendorQuery = {
     page: { type: 'integer', minimum: 1, maximum: 100000 },
     limit: { type: 'integer', minimum: 1, maximum: 100 },
   }, additionalProperties: false,
+} as const;
+const platformPartnerLeadParams = {
+  type: 'object', required: ['leadId'], additionalProperties: false,
+  properties: { leadId: { type: 'string', minLength: 1, maxLength: 120 } },
+} as const;
+const platformPartnerLeadQuery = {
+  type: 'object', additionalProperties: false,
+  properties: { state: { type: 'string', enum: ['RECEIVED', 'CLAIMED', 'ARCHIVED'] }, page: { type: 'integer', minimum: 1 }, limit: { type: 'integer', minimum: 1, maximum: 100 } },
 } as const;
 const platformVendorReviewBody = {
   type: 'object', required: ['status'], properties: {
@@ -1063,6 +1071,20 @@ export function registerApi(app: FastifyInstance) {
   app.put('/api/platform/vendors/:vendorId/capacity', { schema: { params: platformVendorParams, body: platformVendorCapacityBody }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
     try { return await writeConnectedPlatformApi(req.auth!.tenant, 'PUT', `/vendors/admin/${encodeURIComponent(req.params.vendorId)}/capacity`, req.body as any); }
     catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  // A website partner enquiry is deliberately a separate, cloud-owned staging
+  // record. This exposes visibility and ownership assignment only; it cannot
+  // turn an unaudited lead into a vendor through Desktop.
+  app.get('/api/platform/partner-leads', { schema: { querystring: platformPartnerLeadQuery }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await listConnectedPlatformPartnerLeads(req.auth!.tenant, req.query || {}); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/platform/partner-leads/:leadId/claim', { schema: { params: platformPartnerLeadParams }, preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try {
+      const result = await claimConnectedPlatformPartnerLead(req.auth!.tenant, req.params.leadId);
+      audit(req.auth!.tenant, req.auth!.actor, 'platform:partner-lead-claimed', { entity: 'platform_partner_lead', row_id: req.params.leadId });
+      return result;
+    } catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   // Order oversight stays deliberately read-only. The cloud's canonical
   // vendor/rider lifecycle is the authority for pickup, delivery, OTP and

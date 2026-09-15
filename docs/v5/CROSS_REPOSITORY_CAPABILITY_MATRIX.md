@@ -575,6 +575,23 @@ live proxy check against the running backend confirmed the same response
 shape. Secure per-document viewing remains explicitly deferred until a
 token-safe binary preview transport exists.
 
+**Website partner-intake bridge.** A website form is now a deliberately
+separate input channel, not a shortcut around vendor approval. The website
+first persists a validated marketing lead in Supabase and then sends a
+server-only, HMAC-signed, idempotent handoff to the canonical backend's
+`partner_leads` staging table. Platform Control exposes only a compact
+`RECEIVED` queue and a real `CLAIMED` follow-up action; it cannot create a
+vendor, user, marketplace session, KYC decision, or onboarding application.
+The Desktop edge strips email, phone, address and free-form messages before
+the card is rendered, leaving business/contact-name, location, services and
+workflow context. Live verification created a disposable signed lead against
+the current Postgres-backed backend, read and claimed it through the actual
+Desktop platform session, confirmed `CLAIMED` in Postgres, and removed the
+test record plus its test audit evidence afterward. Production activation
+still requires applying the website Supabase migration and configuring the
+same server-only HMAC secret in both deployed services; neither secret nor a
+fake success state exists in Desktop.
+
 **Recovery applied: pending-application suspension.** Final audit found the
 controller and service already accepted `SUSPENDED`, while the original
 `vendor_applications` check constraint omitted it. Backend migration
