@@ -17,6 +17,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { readWorkspace, selectWorkspace, workspacePaths, resetDemoWorkspace } = require('./workspace');
 const { createPreRestoreSnapshot } = require('./recovery-policy');
+const { resolveMarketplaceCloudApiUrl } = require('./cloud-config');
 
 const isDev = !app.isPackaged;
 const HOST = '127.0.0.1'; // bind locally only — the app is the only consumer
@@ -135,6 +136,7 @@ function processServerOutput(chunk) {
 
 function startServer() {
   const workspace = getWorkspace();
+  const marketplaceCloudApiUrl = resolveMarketplaceCloudApiUrl({ isDev });
   const env = {
     ...process.env,
     PORT: '0',
@@ -152,6 +154,10 @@ function startServer() {
     // silent demo state into production; the server must fail closed until
     // the store has completed tax setup.
     ...(process.env.EPIC_SUPPLIER_STATE ? { EPIC_SUPPLIER_STATE: process.env.EPIC_SUPPLIER_STATE } : {}),
+    // Production is pointed at the canonical LNDRY API by the launcher, not
+    // by browser code. This only configures the endpoint; every protected
+    // cloud operation still requires the operator's own OTP/admin session.
+    ...(marketplaceCloudApiUrl ? { EPIC_MARKETPLACE_CLOUD_API_URL: marketplaceCloudApiUrl } : {}),
   };
   const stdio = ['ignore', 'pipe', 'pipe'];
   if (isDev) {

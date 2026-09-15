@@ -8,6 +8,7 @@
   "scripts": {
     "start": "electron .",
     "test:workspace": "node workspace.test.js",
+    "test:cloud-config": "node cloud-config.test.js",
     "test:menu-routing": "node navigation.test.js",
     "test:recovery-policy": "node recovery-policy.test.js",
     "build:web": "npm --prefix ../webapp run build",
@@ -39,6 +40,7 @@
     "disableDefaultIgnoredFiles": true,
     "files": [
       "main.js",
+      "cloud-config.js",
       "recovery-policy.js",
       "preload.js",
       "workspace.js",

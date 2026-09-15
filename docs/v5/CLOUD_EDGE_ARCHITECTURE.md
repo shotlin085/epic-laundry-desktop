@@ -42,8 +42,10 @@ attempted.
   stable `code`, never a raw parsed blob handed back uninspected) — no
   endpoint's JSON is trusted just because it parsed.
 - **`cloud-session.ts`** — business logic: configuration check
-  (`EPIC_MARKETPLACE_CLOUD_API_URL`, unset by default — "not configured" is a
-  first-class state, not an error), connect/status/disconnect, and at-rest
+  (`EPIC_MARKETPLACE_CLOUD_API_URL`, explicitly supplied in development; the
+  packaged Desktop launcher defaults only to the canonical
+  `https://api.lndry.in/api/v1` production boundary — endpoint configuration
+  is not a login or a credential), connect/status/disconnect, and at-rest
   token encryption (see §4).
 - **Migration 37** (`marketplace-cloud-session`) — one row per store,
   `marketplace_cloud_sessions(tenant, store_id)`, storing connection status,
