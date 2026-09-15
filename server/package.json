@@ -20,6 +20,7 @@
     "test:marketplace-catalogue": "tsx src/_selftest-marketplace-catalogue.ts",
     "test:marketplace-cloud-client": "tsx src/_selftest-marketplace-cloud-client.ts",
     "test:marketplace-cloud-order-sync": "tsx src/_selftest-marketplace-cloud-order-sync.ts",
+    "test:marketplace-cloud-auto-sync": "tsx src/_selftest-marketplace-cloud-auto-sync.ts",
     "test:marketplace-cloud-order-actions": "tsx src/_selftest-marketplace-cloud-order-actions.ts",
     "test:marketplace-cloud-reconciliation": "tsx src/_selftest-marketplace-cloud-reconciliation.ts",
     "test:marketplace-cloud-catalogue": "tsx src/_selftest-marketplace-cloud-catalogue.ts",

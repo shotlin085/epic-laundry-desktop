@@ -276,6 +276,18 @@ export type MarketplaceCloudSessionRecord = {
   phone: string;
   encryptedTokensJson: string; tokenExpiresAt?: string; connectedAt?: string; connectedBy: string; updatedAt: string;
 };
+/**
+ * Durable health for the direct REST pull from LNDRY Cloud. This is separate
+ * from the device-envelope checkpoint: a successful vendor-account pull must
+ * never be represented as an acknowledgement for the local edge outbox.
+ */
+export type MarketplaceCloudSyncHealthState = 'Idle' | 'Syncing' | 'Healthy' | 'Backoff';
+export type MarketplaceCloudSyncHealthRecord = {
+  tenant: string; storeId: string; state: MarketplaceCloudSyncHealthState;
+  lastAttemptAt?: string; lastSuccessAt?: string; lastError?: string; nextAttemptAt?: string;
+  consecutiveFailures: number; lastPulled: number; lastCreated: number; lastUpdated: number; lastSkipped: number;
+  updatedAt: string;
+};
 export type PlatformAdminSessionStatus = 'Disconnected' | 'Connected';
 /** A real HQ/platform-admin login (email+password), independent of the vendor phone+OTP connector (MarketplaceCloudSessionRecord). */
 export type PlatformAdminSessionRecord = {
@@ -637,6 +649,7 @@ export class Store {
       // (which is the vendor-owner phone+OTP connector). A Desktop instance
       // can hold both at once: the existing vendor connection is untouched.
       { version: 39, name: 'platform-admin-session', sql: "CREATE TABLE platform_admin_sessions (tenant TEXT NOT NULL, store_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('Disconnected','Connected')), email TEXT NOT NULL DEFAULT '', full_name TEXT NOT NULL DEFAULT '', is_super_admin INTEGER NOT NULL DEFAULT 0 CHECK(is_super_admin IN (0,1)), permissions_json TEXT NOT NULL DEFAULT '[]', encrypted_token_json TEXT NOT NULL DEFAULT '', token_expires_at TEXT, connected_at TEXT, connected_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(tenant,store_id));" },
+      { version: 40, name: 'marketplace-cloud-sync-health', sql: "CREATE TABLE marketplace_cloud_sync_health (tenant TEXT NOT NULL, store_id TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('Idle','Syncing','Healthy','Backoff')), last_attempt_at TEXT, last_success_at TEXT, last_error TEXT, next_attempt_at TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK(consecutive_failures >= 0), last_pulled INTEGER NOT NULL DEFAULT 0, last_created INTEGER NOT NULL DEFAULT 0, last_updated INTEGER NOT NULL DEFAULT 0, last_skipped INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(tenant,store_id));" },
     ];
     this.db.transaction(() => {
       for (const migration of migrations) {
@@ -1087,8 +1100,44 @@ export class Store {
     const row = this.db.prepare('SELECT * FROM marketplace_cloud_sessions WHERE tenant = ? AND store_id = ?').get(tenant, this.currentStore(tenant)) as Record<string, unknown> | undefined;
     return row ? this.marketplaceCloudSessionFromRow(row) : undefined;
   }
+  /** Store-scoped cloud credentials are intentionally not included in backups.
+   * This narrow index lets the local runtime schedule a pull for each store
+   * that already has its own encrypted, connected marketplace account. */
+  listConnectedMarketplaceCloudSessionStoreIds(tenant: string) {
+    return (this.db.prepare("SELECT store_id FROM marketplace_cloud_sessions WHERE tenant = ? AND status = 'Connected' ORDER BY store_id").all(tenant) as Array<{ store_id: string }>)
+      .map((row) => String(row.store_id));
+  }
   deleteMarketplaceCloudSession(tenant: string) {
     this.db.prepare('DELETE FROM marketplace_cloud_sessions WHERE tenant = ? AND store_id = ?').run(tenant, this.currentStore(tenant));
+  }
+  private marketplaceCloudSyncHealthFromRow(row: Record<string, unknown>): MarketplaceCloudSyncHealthRecord {
+    return {
+      tenant: String(row.tenant), storeId: String(row.store_id), state: String(row.state) as MarketplaceCloudSyncHealthState,
+      lastAttemptAt: row.last_attempt_at ? String(row.last_attempt_at) : undefined,
+      lastSuccessAt: row.last_success_at ? String(row.last_success_at) : undefined,
+      lastError: row.last_error ? String(row.last_error) : undefined,
+      nextAttemptAt: row.next_attempt_at ? String(row.next_attempt_at) : undefined,
+      consecutiveFailures: Number(row.consecutive_failures || 0), lastPulled: Number(row.last_pulled || 0),
+      lastCreated: Number(row.last_created || 0), lastUpdated: Number(row.last_updated || 0),
+      lastSkipped: Number(row.last_skipped || 0), updatedAt: String(row.updated_at),
+    };
+  }
+  saveMarketplaceCloudSyncHealth(input: MarketplaceCloudSyncHealthRecord) {
+    const storeId = input.storeId || this.currentStore(input.tenant);
+    this.db.prepare(`INSERT INTO marketplace_cloud_sync_health(tenant,store_id,state,last_attempt_at,last_success_at,last_error,next_attempt_at,consecutive_failures,last_pulled,last_created,last_updated,last_skipped,updated_at)
+      VALUES (@tenant,@storeId,@state,@lastAttemptAt,@lastSuccessAt,@lastError,@nextAttemptAt,@consecutiveFailures,@lastPulled,@lastCreated,@lastUpdated,@lastSkipped,@updatedAt)
+      ON CONFLICT(tenant,store_id) DO UPDATE SET state=excluded.state,last_attempt_at=excluded.last_attempt_at,last_success_at=excluded.last_success_at,last_error=excluded.last_error,next_attempt_at=excluded.next_attempt_at,consecutive_failures=excluded.consecutive_failures,last_pulled=excluded.last_pulled,last_created=excluded.last_created,last_updated=excluded.last_updated,last_skipped=excluded.last_skipped,updated_at=excluded.updated_at`).run({
+      ...input, storeId, lastAttemptAt: input.lastAttemptAt || null, lastSuccessAt: input.lastSuccessAt || null,
+      lastError: input.lastError || null, nextAttemptAt: input.nextAttemptAt || null,
+    });
+    return this.getMarketplaceCloudSyncHealth(input.tenant)!;
+  }
+  getMarketplaceCloudSyncHealth(tenant: string) {
+    const row = this.db.prepare('SELECT * FROM marketplace_cloud_sync_health WHERE tenant = ? AND store_id = ?').get(tenant, this.currentStore(tenant)) as Record<string, unknown> | undefined;
+    return row ? this.marketplaceCloudSyncHealthFromRow(row) : undefined;
+  }
+  deleteMarketplaceCloudSyncHealth(tenant: string) {
+    this.db.prepare('DELETE FROM marketplace_cloud_sync_health WHERE tenant = ? AND store_id = ?').run(tenant, this.currentStore(tenant));
   }
   private platformAdminSessionFromRow(row: Record<string, unknown>): PlatformAdminSessionRecord {
     return { tenant: String(row.tenant), storeId: String(row.store_id), status: String(row.status) as PlatformAdminSessionStatus, email: String(row.email || ''), fullName: String(row.full_name || ''), isSuperAdmin: Boolean(row.is_super_admin), permissions: decode<string[]>(String(row.permissions_json || '[]')), encryptedTokenJson: String(row.encrypted_token_json || ''), tokenExpiresAt: row.token_expires_at ? String(row.token_expires_at) : undefined, connectedAt: row.connected_at ? String(row.connected_at) : undefined, connectedBy: String(row.connected_by || ''), updatedAt: String(row.updated_at) };
@@ -1370,7 +1419,7 @@ export class Store {
     });
   }
   replaceAll(input: DbShape) {
-    this.db.exec('DELETE FROM entity_rows; DELETE FROM laundry_order_search_map; DELETE FROM laundry_order_search_fts; DELETE FROM records; DELETE FROM sequences; DELETE FROM garment_unit_events; DELETE FROM tag_reprints; DELETE FROM tag_history; DELETE FROM tag_print_jobs; DELETE FROM laundry_container_events; DELETE FROM laundry_containers; DELETE FROM garment_units; DELETE FROM financial_entries; DELETE FROM financial_documents; DELETE FROM customer_ledger_entries; DELETE FROM wallet_entries; DELETE FROM customer_addresses; DELETE FROM laundry_order_holds; DELETE FROM cash_shift_closes; DELETE FROM financial_normalization_runs; DELETE FROM laundry_order_items; DELETE FROM laundry_orders; DELETE FROM customers; DELETE FROM compatibility_migration_runs; DELETE FROM idempotency_commands; DELETE FROM sync_outbox; DELETE FROM sync_inbox; DELETE FROM sync_checkpoints; DELETE FROM order_external_links; DELETE FROM marketplace_customer_links; DELETE FROM marketplace_order_projections; DELETE FROM marketplace_devices; DELETE FROM marketplace_catalogue_mappings; DELETE FROM marketplace_cloud_sessions; DELETE FROM platform_admin_sessions;');
+    this.db.exec('DELETE FROM entity_rows; DELETE FROM laundry_order_search_map; DELETE FROM laundry_order_search_fts; DELETE FROM records; DELETE FROM sequences; DELETE FROM garment_unit_events; DELETE FROM tag_reprints; DELETE FROM tag_history; DELETE FROM tag_print_jobs; DELETE FROM laundry_container_events; DELETE FROM laundry_containers; DELETE FROM garment_units; DELETE FROM financial_entries; DELETE FROM financial_documents; DELETE FROM customer_ledger_entries; DELETE FROM wallet_entries; DELETE FROM customer_addresses; DELETE FROM laundry_order_holds; DELETE FROM cash_shift_closes; DELETE FROM financial_normalization_runs; DELETE FROM laundry_order_items; DELETE FROM laundry_orders; DELETE FROM customers; DELETE FROM compatibility_migration_runs; DELETE FROM idempotency_commands; DELETE FROM sync_outbox; DELETE FROM sync_inbox; DELETE FROM sync_checkpoints; DELETE FROM order_external_links; DELETE FROM marketplace_customer_links; DELETE FROM marketplace_order_projections; DELETE FROM marketplace_devices; DELETE FROM marketplace_catalogue_mappings; DELETE FROM marketplace_cloud_sessions; DELETE FROM marketplace_cloud_sync_health; DELETE FROM platform_admin_sessions;');
     for (const row of input.rows || []) this.insertRow(row);
     for (const entry of input.gl || []) this.appendGL(entry);
     for (const entry of input.audit || []) this.appendAudit(entry);
@@ -1437,6 +1486,7 @@ export class Store {
       this.db.prepare('DELETE FROM marketplace_order_projections WHERE tenant = ? AND store_id = ?').run(tenant, storeId);
       this.db.prepare('DELETE FROM marketplace_devices WHERE tenant = ? AND store_id = ?').run(tenant, storeId);
       this.db.prepare('DELETE FROM marketplace_cloud_sessions WHERE tenant = ? AND store_id = ?').run(tenant, storeId);
+      this.db.prepare('DELETE FROM marketplace_cloud_sync_health WHERE tenant = ? AND store_id = ?').run(tenant, storeId);
       this.db.prepare('DELETE FROM platform_admin_sessions WHERE tenant = ? AND store_id = ?').run(tenant, storeId);
       this.db.prepare('DELETE FROM marketplace_catalogue_mappings WHERE tenant = ? AND store_id = ?').run(tenant, storeId);
       this.db.prepare('DELETE FROM idempotency_commands WHERE tenant = ? AND scope LIKE ?').run(tenant, `${storeId}:%`);

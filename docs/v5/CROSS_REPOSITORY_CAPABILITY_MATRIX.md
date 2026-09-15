@@ -10,6 +10,17 @@ transcript; this document is the synthesized, decision-relevant summary. It will
 be regenerated (per mandate §120) after implementation work, not just written
 once.
 
+> **2026-09-15 correction / current implementation note.** The historical
+> summary below accurately records the pre-connector audit, but is no longer
+> the current Desktop state. Desktop now has a direct vendor-account connector
+> to the real Fastify backend, real order pull, cloud-authoritative
+> accept/reject/progress/reconciliation/catalogue paths, and a restart-safe
+> per-store REST polling fallback with durable health/backoff state. The local
+> edge outbox/inbox remains a distinct, unconnected envelope protocol; no
+> document should describe the direct connector as an ACK transport. The full
+> current boundary and remaining gaps are recorded in
+> [ECOSYSTEM_CONVERGENCE_AUDIT_2026-09-15.md](ECOSYSTEM_CONVERGENCE_AUDIT_2026-09-15.md).
+
 ## 0. The single most important cross-repo finding
 
 **Epic Laundry Desktop has a real, well-built local marketplace domain model —

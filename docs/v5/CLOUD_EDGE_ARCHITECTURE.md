@@ -813,6 +813,62 @@ necessary; a configured provider plus verifiable provider receipt and
 reconciliation workflow remain required before any payout execution surface
 can exist.
 
+## 4k. Restart-safe direct order polling (2026-09-15)
+
+The original order pull was deliberately manual. That was safe as a first
+connection slice, but it still left a connected vendor with a stale Desktop
+until an operator pressed **Pull from marketplace**. The Desktop runtime now
+starts `cloud-order-auto-sync.ts` by default after Fastify is listening.
+
+This is a **direct vendor-account REST pull**, not an implementation of the
+separate device-envelope protocol:
+
+- It discovers each store that has an encrypted, connected vendor session and
+  runs inside that store's explicit scope. A vendor token, projection or health
+  record can never cross into another store.
+- It calls the same `pullCloudOrders` connector used by the manual action. The
+  local projection's immutable original request remains untouched.
+- Migration 40 adds `marketplace_cloud_sync_health`. It records only
+  operational telemetry: attempt/success time, last pull counts, sanitized
+  failure reason, consecutive failures and next retry time. It is deliberately
+  excluded from restore truth alongside cloud credentials; it is not a ledger
+  or a business event.
+- On failure the next network attempt is exponentially delayed, capped at 15
+  minutes. The saved `next_attempt_at` is checked before every call, so a
+  Desktop restart cannot turn an outage into a retry storm. A disconnected or
+  unlinked account reaches no cloud order endpoint at all.
+- A successful background pull resets the failure counter. The Sync Status UI
+  shows this direct-pull health separately from the local edge outbox/inbox and
+  explicitly says that it does **not** acknowledge device-envelope events.
+- `EPIC_MARKETPLACE_CLOUD_AUTO_SYNC=false` disables the runtime loop for a
+  controlled diagnostic session. `EPIC_MARKETPLACE_CLOUD_POLL_INTERVAL_MS`
+  is bounded between 5 seconds and 5 minutes; the default is 30 seconds.
+
+An important integrity fix shipped with this loop: an unchanged remote order
+no longer gets a new Desktop `sourceVersion` merely because it was polled.
+Only a difference in cloud-owned fields (vendor, mapped state, order number,
+payment state, customer, pickup or request snapshot) writes a new projection
+revision. Local notes, preferences and links do not cause a cloud rewrite.
+
+Source verification is automated by:
+
+- `npm run test:marketplace-cloud-order-sync` — unchanged re-pulls write no
+  projection revision; a real state change advances exactly one revision.
+- `npm run test:marketplace-cloud-auto-sync` — health persistence, bounded
+  exponential backoff, recovery and disconnected-account safety.
+
+**Live verification (2026-09-15):** after Docker/Postgres recovered, a fresh,
+isolated Desktop SQLite workspace was started against the real local Fastify
+backend on port 4500. Desktop authenticated the real seeded vendor through the
+development OTP flow, the background scheduler discovered the newly connected
+store, and `GET /api/marketplace/cloud/sync-health` reached `Healthy` after a
+real authenticated `GET /vendor/orders`. That vendor had zero current orders,
+so this run proves the scheduler/credential/health path without falsely
+claiming a new order materialization; earlier §4b verification covers a real
+order pull. The temporary SQLite database, its WAL and encrypted cloud token
+were removed immediately after the check. No backend order or vendor fact was
+changed.
+
 ## 5. What this does NOT do yet
 
 - Does not call `select-shop`/`select-role` — an account linked to multiple
@@ -839,13 +895,12 @@ can exist.
   carries no reconciliation record, so nothing resolves on its own until
   someone looks. With no background poll yet (above), a decided recount stays
   locally pending until it is next opened.
-- **No scheduled/background sync.** `pullCloudOrders` only runs when
-  `/api/marketplace/cloud/sync-orders` is called. Wiring a recurring poll —
-  or better, reacting to the backend's already-running Socket.IO transport
-  instead of polling — is separate, scoped follow-up work. Until then a new
-  marketplace order does not appear in Desktop on its own, and (per §4h) a
-  decided recount or an in-flight rider/delivery status change stays as last
-  synced until the operator re-opens that order.
+- **No real-time subscription yet.** A bounded, restart-safe REST poll now
+  refreshes connected vendor orders automatically. Desktop has not yet joined
+  the backend's Socket.IO channel, so fresh events can take up to the configured
+  poll interval to appear; detail-only changes such as a customer recount still
+  require their existing detail-sync path. Socket.IO adoption needs a separately
+  verified Desktop token/event contract before it can replace the fallback.
 - **UI covers connect + pull + accept/reject + stage progress + reconciliation
   + evidence + catalogue price/availability/stock** (§4d, §4h, §4i).
   Pickup/delivery *assignment* (rider-side, not vendor-side — §4h confirmed

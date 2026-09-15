@@ -11,6 +11,7 @@ import { assignLaundryOrder, bookLaundryOrder, createLaundryRider, laundryCatalo
 import { laundryBusinessDate } from './modules/laundry/dates.js';
 import { seedLaundryDemoExpansion, seedLaundryDemoExperienceCoverage, seedLaundryDemoLifecycleCoverage } from './modules/laundry/demo-data.js';
 import { ensureDemoOwner } from './modules/auth/auth.js';
+import { createCloudOrderAutoSync } from './modules/marketplace/cloud-order-auto-sync.js';
 
 const TENANT = process.env.EPIC_TENANT || 'T1';
 const PORT = Number(process.env.PORT || 3001);
@@ -73,6 +74,17 @@ await app.register(fastifyStatic, {
 });
 
 registerApi(app);
+// This is deliberately a direct account REST pull, not the separate local
+// device-envelope transport. It runs per connected store, persists health and
+// backs off safely after a cloud failure. Set the flag to false only for a
+// controlled diagnostic session; ordinary Desktop operation keeps it on.
+const cloudOrderAutoSync = process.env.EPIC_MARKETPLACE_CLOUD_AUTO_SYNC === 'false'
+  ? undefined
+  : createCloudOrderAutoSync({
+    tenant: TENANT,
+    intervalMs: Number(process.env.EPIC_MARKETPLACE_CLOUD_POLL_INTERVAL_MS || 30_000),
+  });
+app.addHook('onClose', async () => { cloudOrderAutoSync?.stop(); });
 registerSeedAutomations(TENANT);
 if (WORKSPACE_MODE === 'demo') {
   ensureDemoOwner(TENANT, 'STORE-DEFAULT');
@@ -156,6 +168,7 @@ try {
     const proof = createHmac('sha256', startupSecret).update(`${startupNonce}:${activePort}`).digest('hex');
     console.log(`EPIC_READY ${JSON.stringify({ port: activePort, nonce: startupNonce, proof })}`);
   }
+  cloudOrderAutoSync?.start();
   console.log(`\n  Epic Laundry ${WORKSPACE_MODE} workspace on http://localhost:${activePort}`);
   console.log(`  Laundry Desk UI: http://localhost:${activePort}/ui/app/`);
   console.log(`  API health:      http://localhost:${activePort}/api/health`);

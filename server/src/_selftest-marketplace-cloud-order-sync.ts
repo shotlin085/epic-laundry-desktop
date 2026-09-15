@@ -128,23 +128,25 @@ try {
   const order3 = projections.find((p) => p.externalOrderId === 'order-remote-003')!;
   assert.equal(order3.state, 'Completed');
 
-  // ── Idempotent re-sync: same data → no duplicates, versions advance, no orphaned skip growth ──
+  // ── Idempotent re-sync: same data → no duplicates and no invented revisions ──
   const secondSync = await app.inject({ method: 'POST', url: '/api/marketplace/cloud/sync-orders', headers });
   const secondSummary = secondSync.json();
   assert.equal(secondSummary.created, 0, 're-syncing unchanged orders creates nothing new');
-  assert.equal(secondSummary.updated, 3, 're-syncing unchanged orders updates the existing 3 projections');
+  assert.equal(secondSummary.updated, 0, 're-syncing unchanged orders does not rewrite the existing projections');
   const projectionsAfterResync = store.withStoreScope('ORDER-SYNC-API', 'STORE-ORDER-SYNC', () => store.listMarketplaceOrderProjections('ORDER-SYNC-API'));
   assert.equal(projectionsAfterResync.length, 3, 'no duplicate rows were created for the same external order id');
   const order1AfterResync = projectionsAfterResync.find((p) => p.externalOrderId === 'order-remote-001')!;
   assert.equal(order1AfterResync.id, order1.id, 'the same projection row is reused, not replaced, across re-syncs');
-  assert.equal(order1AfterResync.sourceVersion, 2, 'source version advances on re-sync');
+  assert.equal(order1AfterResync.sourceVersion, 1, 'source version remains stable when the cloud source has not changed');
 
   // ── A status change on re-sync is reflected ─────────────────
   const advancedOrders = REMOTE_ORDERS.map((o) => (o.id === 'order-remote-001' ? { ...o, status: 'VENDOR_ACCEPTED' } : o));
   (globalThis as any).fetch = buildMockFetch({ accessToken: 'token-b', vendorLinked: true, orders: advancedOrders });
   await app.inject({ method: 'POST', url: '/api/marketplace/cloud/sync-orders', headers });
   const projectionsAfterStatusChange = store.withStoreScope('ORDER-SYNC-API', 'STORE-ORDER-SYNC', () => store.listMarketplaceOrderProjections('ORDER-SYNC-API'));
-  assert.equal(projectionsAfterStatusChange.find((p) => p.externalOrderId === 'order-remote-001')!.state, 'Accepted', 'a real status change on the backend is picked up on the next pull');
+  const changedOrder = projectionsAfterStatusChange.find((p) => p.externalOrderId === 'order-remote-001')!;
+  assert.equal(changedOrder.state, 'Accepted', 'a real status change on the backend is picked up on the next pull');
+  assert.equal(changedOrder.sourceVersion, 2, 'a real cloud change, and only a real cloud change, advances the source revision');
 
   console.log('PASS marketplace cloud order sync: real-shape field mapping, status-code mapping (incl. an unmapped-status skip), vendor identity tagging, and idempotent re-sync self-test complete');
 } finally {

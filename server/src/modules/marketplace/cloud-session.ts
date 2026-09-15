@@ -163,6 +163,9 @@ export async function connectCloudSession(
     updatedAt: now,
   };
   store.saveMarketplaceCloudSession(record);
+  // A different account (or a fresh credential for the same account) must
+  // never inherit a previous connection's success/failure indicator.
+  store.deleteMarketplaceCloudSyncHealth(tenant);
   return getCloudConnectionStatus(tenant);
 }
 
@@ -195,6 +198,7 @@ export async function disconnectCloudSession(tenant: string, fetchImpl: FetchLik
     }
   }
   store.deleteMarketplaceCloudSession(tenant);
+  store.deleteMarketplaceCloudSyncHealth(tenant);
   return getCloudConnectionStatus(tenant);
 }
 

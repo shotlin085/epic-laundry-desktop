@@ -29,6 +29,19 @@ function statusTone(status: string) {
 }
 
 type CloudStatus = { configured: boolean; connected: boolean; remoteVendorName?: string; remoteVendorId?: string; remoteUserRole?: string; phone?: string; connectedAt?: string }
+type CloudSyncState = 'Idle' | 'Syncing' | 'Healthy' | 'Backoff'
+type CloudSyncHealth = {
+  state: CloudSyncState
+  lastAttemptAt?: string; lastSuccessAt?: string; lastError?: string; nextAttemptAt?: string
+  consecutiveFailures: number; lastPulled: number; lastCreated: number; lastUpdated: number; lastSkipped: number; updatedAt: string
+} | null
+
+function cloudSyncTone(state?: CloudSyncState) {
+  if (state === 'Healthy') return 'bg-[#e8f3ee] text-[#2e6a60]'
+  if (state === 'Syncing') return 'bg-[#edf2ff] text-[#4a63b8]'
+  if (state === 'Backoff') return 'bg-[#fde9e6] text-[#a44036]'
+  return 'bg-[#eef2f0] text-[#617178]'
+}
 
 /**
  * Connects this store to its real marketplace account. Kept deliberately
@@ -42,7 +55,8 @@ function MarketplaceAccountPanel({ canManage }: { canManage: boolean }) {
   const [otp, setOtp] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
   const cloud = useQuery({ queryKey: ['marketplace-cloud-status'], queryFn: () => apiGet<CloudStatus>('/marketplace/cloud/status'), refetchInterval: 60_000 })
-  const refresh = () => { void client.invalidateQueries({ queryKey: ['marketplace-cloud-status'] }); void client.invalidateQueries({ queryKey: ['marketplace-online-orders'] }) }
+  const cloudSyncHealth = useQuery({ queryKey: ['marketplace-cloud-sync-health'], queryFn: () => apiGet<CloudSyncHealth>('/marketplace/cloud/sync-health'), enabled: Boolean(cloud.data?.connected && cloud.data?.remoteVendorId), refetchInterval: 10_000 })
+  const refresh = () => { void client.invalidateQueries({ queryKey: ['marketplace-cloud-status'] }); void client.invalidateQueries({ queryKey: ['marketplace-cloud-sync-health'] }); void client.invalidateQueries({ queryKey: ['marketplace-online-orders'] }) }
   const requestOtp = useMutation({ mutationFn: () => apiPost('/marketplace/cloud/otp', { phone: phone.trim() }), onSuccess: () => setNotice('A one-time code was sent to that number by the marketplace. Enter it below to finish connecting.') })
   const connect = useMutation({ mutationFn: () => apiPost<CloudStatus>('/marketplace/cloud/connect', { phone: phone.trim(), otp: otp.trim() }), onSuccess: (result) => { setOtp(''); setNotice(result.remoteVendorId ? `Connected as ${result.remoteVendorName || 'this account'}.` : 'Connected, but this account has no vendor linked yet, so marketplace order decisions stay unavailable.'); refresh() } })
   const disconnect = useMutation({ mutationFn: () => apiPost('/marketplace/cloud/disconnect', undefined), onSuccess: () => { setNotice('This store no longer holds marketplace credentials. Local operations are unaffected.'); refresh() } })
@@ -50,6 +64,7 @@ function MarketplaceAccountPanel({ canManage }: { canManage: boolean }) {
   const error = requestOtp.error || connect.error || disconnect.error
   const data = cloud.data
   const linked = Boolean(data?.connected && data?.remoteVendorId)
+  const health = cloudSyncHealth.data
 
   return <section className={`rounded-[22px] border p-5 md:p-6 ${linked ? 'border-[#39786f]/20 bg-[#f3faf6]' : 'border-[#263f44]/10 bg-white'} shadow-[0_8px_28px_rgba(37,48,43,.04)]`}>
     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -63,6 +78,11 @@ function MarketplaceAccountPanel({ canManage }: { canManage: boolean }) {
       </div>
       {data?.connected ? <dl className="grid shrink-0 gap-3 text-sm sm:grid-cols-2 lg:w-[300px]"><Row label="Signed in as" value={data.phone || 'Unknown'} /><Row label="Account role" value={data.remoteUserRole || 'Not reported'} /><Row label="Vendor id" value={data.remoteVendorId || 'Not linked'} mono /><Row label="Connected" value={when(data.connectedAt)} /></dl> : null}
     </div>
+
+    {linked ? <div className="mt-4 rounded-xl border border-[#39786f]/15 bg-white/70 p-3.5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-2"><RefreshCw className={`h-4 w-4 ${health?.state === 'Syncing' ? 'animate-spin text-[#4a63b8]' : 'text-[#315d57]'}`} /><p className="text-xs font-bold text-[#27454c]">Direct marketplace order pull</p></div><span className={`inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold ${cloudSyncTone(health?.state)}`}>{health?.state === 'Healthy' ? <CheckCircle2 className="h-3.5 w-3.5" /> : health?.state === 'Backoff' ? <AlertTriangle className="h-3.5 w-3.5" /> : <Clock3 className="h-3.5 w-3.5" />}{health?.state || 'Waiting'}</span></div>
+      {health ? <div className="mt-2 grid gap-1 text-xs text-[#617178] sm:grid-cols-2"><span>Last success: <strong className="font-semibold text-[#315d57]">{when(health.lastSuccessAt)}</strong></span><span>Last pull: <strong className="font-semibold text-[#315d57]">{health.lastPulled} received · {health.lastCreated} new · {health.lastUpdated} changed</strong></span>{health.state === 'Backoff' ? <span className="sm:col-span-2 text-[#a44036]">Retry after {when(health.nextAttemptAt)} · {health.lastError || 'Marketplace unavailable'}</span> : <span className="sm:col-span-2">A direct account pull is separate from the local edge event ledger below; it never acknowledges a device-envelope event.</span>}</div> : <p className="mt-2 text-xs text-[#617178]">Waiting for this Desktop runtime’s first background marketplace check.</p>}
+    </div> : null}
 
     {error ? <div role="alert" className="mt-4 flex items-start gap-2 rounded-xl bg-[#fde9e6] px-3 py-2.5 text-sm text-[#a44036]"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />{operatorErrorMessage(error, 'The marketplace connection attempt failed.')}{error instanceof ApiError && error.code === 'CLOUD_NOT_CONFIGURED' ? ' This installation has no marketplace endpoint configured.' : ''}</div> : null}
     {notice ? <div role="status" className="mt-4 rounded-xl bg-[#e8f3ee] px-3 py-2.5 text-xs font-semibold text-[#2e6a60]">{notice}</div> : null}

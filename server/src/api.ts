@@ -963,6 +963,9 @@ export function registerApi(app: FastifyInstance) {
   app.get('/api/marketplace/cloud/status', { preHandler: [guard, allow('orders.read')] }, async (req: any) =>
     getCloudConnectionStatus(req.auth!.tenant),
   );
+  app.get('/api/marketplace/cloud/sync-health', { preHandler: [guard, allow('orders.read')] }, async (req: any) =>
+    inStore(req, () => store.getMarketplaceCloudSyncHealth(req.auth!.tenant)),
+  );
   app.post('/api/marketplace/cloud/disconnect', { preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
     try {
       const result = await disconnectCloudSession(req.auth!.tenant);

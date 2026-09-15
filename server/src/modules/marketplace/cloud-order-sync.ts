@@ -108,6 +108,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export type CloudOrderSyncSummary = { pulled: number; created: number; updated: number; skipped: Array<{ externalOrderId: string; reason: string }> };
 
+/**
+ * A recurring pull must not manufacture a new source revision merely because
+ * the transport was polled again. Keep the comparison intentionally limited
+ * to cloud-owned fields: local notes, preferences, links and timestamps are
+ * maintained by the Desktop and must not cause a cloud rewrite.
+ */
+function hasSameCloudSource(existing: MarketplaceOrderProjectionRecord, candidate: MarketplaceOrderProjectionRecord) {
+  return existing.vendorId === candidate.vendorId
+    && existing.state === candidate.state
+    && existing.orderNumber === candidate.orderNumber
+    && existing.paymentState === candidate.paymentState
+    && JSON.stringify(existing.customer) === JSON.stringify(candidate.customer)
+    && JSON.stringify(existing.pickup) === JSON.stringify(candidate.pickup)
+    && JSON.stringify(existing.request) === JSON.stringify(candidate.request);
+}
+
 export async function pullCloudOrders(tenant: string, actor: string, fetchImpl?: FetchLike): Promise<CloudOrderSyncSummary> {
   const status = getCloudConnectionStatus(tenant);
   if (!status.connected) throw new Error('CLOUD_NOT_CONNECTED');
@@ -141,6 +157,9 @@ export async function pullCloudOrders(tenant: string, actor: string, fetchImpl?:
       vendorId: status.remoteVendorId,
       channel: 'MARKETPLACE',
       externalOrderId: entry.id,
+      // This only becomes a new source revision after the cloud-owned
+      // snapshot is proven different below. A 30-second polling fallback
+      // must not create fake change history for an unchanged order.
       sourceVersion: (existing?.sourceVersion || 0) + 1,
       state: localState,
       orderNumber: typeof entry.order_number === 'string' ? entry.order_number : entry.id,
@@ -168,8 +187,6 @@ export async function pullCloudOrders(tenant: string, actor: string, fetchImpl?:
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     };
-    store.saveMarketplaceOrderProjection(record);
-
     // Record the customer's ORIGINAL request as its own immutable row the
     // first time this order is seen. Everything downstream — physical intake,
     // a reconciliation proposal, the customer's decision — is stored against
@@ -185,6 +202,9 @@ export async function pullCloudOrders(tenant: string, actor: string, fetchImpl?:
       requestedAt: typeof entry.created_at === 'string' ? entry.created_at : undefined,
     });
 
+    if (existing && hasSameCloudSource(existing, record)) continue;
+
+    store.saveMarketplaceOrderProjection(record);
     if (existing) summary.updated += 1; else summary.created += 1;
   }
 
