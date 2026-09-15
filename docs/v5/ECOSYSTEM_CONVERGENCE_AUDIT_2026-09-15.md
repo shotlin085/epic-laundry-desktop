@@ -14,7 +14,7 @@ authority.
 | --- | --- | --- |
 | Vendor app | Flutter uses the real `/api/v1` Fastify API with bearer refresh and vendor/rider workflows. | Backend owns cross-device order/rider state. |
 | Central dashboard | Next.js uses the same API and Socket.IO event family. | Backend owns admin reads and permitted admin actions. |
-| Epic Laundry Desktop | Encrypted vendor phone+OTP session, real REST order/catalogue/action/reconciliation paths; per-store background pull with durable backoff. Separate encrypted platform-admin session exposes bounded platform readers. | Backend remains source for marketplace coordination; SQLite owns local offline work and physical-operational evidence. |
+| Epic Laundry Desktop | Encrypted vendor phone+OTP session, real REST order/catalogue/action/reconciliation paths; per-store background pull with durable backoff and 100-order paging (up to 100,000 rows per pass). Separate encrypted platform-admin session exposes bounded platform readers. | Backend remains source for marketplace coordination; SQLite owns local offline work and physical-operational evidence. |
 | Website `Shotlin/lndry` | Next.js marketing/partner lead site with its own Supabase vendor-lead flow. | It is **not** a customer order client and is not connected to Fastify order authority. |
 
 ## Boundaries that must remain explicit

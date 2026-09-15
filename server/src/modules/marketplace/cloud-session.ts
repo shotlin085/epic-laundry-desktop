@@ -217,6 +217,14 @@ export async function callConnectedCloudApi(tenant: string, path: string, fetchI
   return cloudClient.authenticatedGet(fetchImpl, baseUrl, path, tokens, onRefreshed);
 }
 
+/** Use only where the cloud endpoint's metadata is part of the contract, for
+ * example offset/cursor pagination. Ordinary connected readers should keep
+ * using callConnectedCloudApi so they do not couple to envelope shape. */
+export async function callConnectedCloudApiEnvelope(tenant: string, path: string, fetchImpl: FetchLike = defaultFetch()): Promise<Record<string, unknown>> {
+  const { baseUrl, tokens, onRefreshed } = connectedCloudCall(tenant);
+  return cloudClient.authenticatedGetEnvelope(fetchImpl, baseUrl, path, tokens, onRefreshed);
+}
+
 /** POST counterpart of `callConnectedCloudApi` — see authenticatedPost's note on why retrying these is safe. */
 export async function postConnectedCloudApi(tenant: string, path: string, body: unknown, fetchImpl: FetchLike = defaultFetch()): Promise<unknown> {
   const { baseUrl, tokens, onRefreshed } = connectedCloudCall(tenant);

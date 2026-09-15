@@ -26,9 +26,10 @@ const REMOTE_ORDERS = [
   { id: 'order-remote-999', order_number: 'LND-1999', status: 'SOME_FUTURE_STATUS_NOT_YET_MAPPED', user_id: 'cust-9', items: [], subtotal: '0.00', delivery_fee: '0.00', platform_fee: '0.00', tax_amount: '0.00', handling_fee: '0.00', total_amount: '0.00', payment_method: 'ONLINE', payment_status: 'PAID', delivery_address: {}, vendor_slot_id: null, pickup_date: null, estimated_amount_paise: 0, payable_amount_paise: 0, fee_breakdown: {}, processing_stage: null, pickup_otp: null, delivery_otp: null, created_at: '2026-09-14T12:00:00Z', updated_at: '2026-09-14T12:00:00Z', customer_name: 'Test Edge Case', customer_phone: '9000000009' },
 ];
 
-function buildMockFetch(opts: { accessToken: string; vendorLinked: boolean; orders: typeof REMOTE_ORDERS }): typeof fetch {
+function buildMockFetch(opts: { accessToken: string; vendorLinked: boolean; orders: ReadonlyArray<Record<string, unknown>> }): typeof fetch {
   return (async (url: string, init: any = {}) => {
-    const path = String(url).replace('https://fake-lndry-cloud.test/api/v1', '');
+    const [path, queryString = ''] = String(url).replace('https://fake-lndry-cloud.test/api/v1', '').split('?');
+    const query = new URLSearchParams(queryString);
     const method = init.method || 'GET';
     const body = init.body ? JSON.parse(init.body) : {};
     const json = (status: number, payload: unknown) => ({ status, json: async () => payload }) as any;
@@ -57,7 +58,10 @@ function buildMockFetch(opts: { accessToken: string; vendorLinked: boolean; orde
     }
     if (path.startsWith('/vendor/orders') && method === 'GET') {
       if (!auth.includes(opts.accessToken)) return json(401, { success: false });
-      return json(200, { success: true, data: opts.orders, meta: { total: opts.orders.length } });
+      const page = Math.max(1, Number(query.get('page') || 1));
+      const limit = Math.max(1, Number(query.get('limit') || 20));
+      const total = opts.orders.length;
+      return json(200, { success: true, data: opts.orders.slice((page - 1) * limit, page * limit), meta: { pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } } });
     }
     if (path === '/auth/logout' && method === 'POST') return json(200, { success: true });
     throw new Error(`unexpected mock fetch call: ${method} ${path}`);
@@ -138,6 +142,21 @@ try {
   const order1AfterResync = projectionsAfterResync.find((p) => p.externalOrderId === 'order-remote-001')!;
   assert.equal(order1AfterResync.id, order1.id, 'the same projection row is reused, not replaced, across re-syncs');
   assert.equal(order1AfterResync.sourceVersion, 1, 'source version remains stable when the cloud source has not changed');
+
+  // ── Pagination: Desktop must not silently drop work after the first 100 ──
+  const paginatedOrders = Array.from({ length: 205 }, (_, index) => ({
+    ...REMOTE_ORDERS[0],
+    id: `order-page-${String(index + 1).padStart(3, '0')}`,
+    order_number: `LND-PAGE-${index + 1}`,
+  }));
+  (globalThis as any).fetch = buildMockFetch({ accessToken: 'token-b', vendorLinked: true, orders: paginatedOrders });
+  const paginatedSync = await app.inject({ method: 'POST', url: '/api/marketplace/cloud/sync-orders', headers });
+  assert.equal(paginatedSync.statusCode, 200);
+  const paginatedSummary = paginatedSync.json();
+  assert.equal(paginatedSummary.pulled, 205, 'all three backend pages are pulled, not merely the first 100');
+  assert.equal(paginatedSummary.created, 205);
+  const projectionsAfterPagination = store.withStoreScope('ORDER-SYNC-API', 'STORE-ORDER-SYNC', () => store.listMarketplaceOrderProjections('ORDER-SYNC-API'));
+  assert.equal(projectionsAfterPagination.length, 208, 'the previous three plus all 205 paged orders are materialized exactly once');
 
   // ── A status change on re-sync is reflected ─────────────────
   const advancedOrders = REMOTE_ORDERS.map((o) => (o.id === 'order-remote-001' ? { ...o, status: 'VENDOR_ACCEPTED' } : o));

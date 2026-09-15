@@ -215,6 +215,24 @@ export async function authenticatedGet(
 }
 
 /**
+ * Envelope-preserving counterpart to authenticatedGet. Most cloud readers
+ * need only `data`, but paginated endpoints also need the backend's `meta`
+ * contract. Keeping this explicit avoids silently dropping pagination or
+ * future server-side cursor metadata at the transport boundary.
+ */
+export async function authenticatedGetEnvelope(
+  fetchImpl: FetchLike,
+  baseUrl: string,
+  path: string,
+  tokens: CloudTokens,
+  onRefreshed?: (tokens: CloudTokens) => void,
+): Promise<Record<string, unknown>> {
+  const body = await authenticatedRequest(fetchImpl, baseUrl, path, tokens, { method: 'GET' }, onRefreshed, false);
+  if (!isRecord(body)) throw new CloudClientError('CLOUD_UNEXPECTED_RESPONSE', `LNDRY cloud returned an unexpected envelope from ${path}`);
+  return body;
+}
+
+/**
  * Authenticated POST with the same one-shot refresh-and-retry as the GET path.
  *
  * Retrying a mutation is only safe because the only mutations routed through
@@ -262,10 +280,11 @@ async function authenticatedRequest(
   tokens: CloudTokens,
   opts: { method: string; body?: unknown },
   onRefreshed?: (tokens: CloudTokens) => void,
+  unwrap = true,
 ): Promise<unknown> {
   try {
     const body = await callCloud(fetchImpl, baseUrl, path, { ...opts, accessToken: tokens.accessToken });
-    return body.data ?? body;
+    return unwrap ? body.data ?? body : body;
   } catch (error) {
     // Only an EXPIRED token (401) is worth refreshing. A 403 means the
     // account is authenticated but not permitted (e.g. the backend's
@@ -276,7 +295,7 @@ async function authenticatedRequest(
       const refreshed = await refreshAccessToken(fetchImpl, baseUrl, tokens.refreshToken);
       onRefreshed?.(refreshed);
       const body = await callCloud(fetchImpl, baseUrl, path, { ...opts, accessToken: refreshed.accessToken });
-      return body.data ?? body;
+      return unwrap ? body.data ?? body : body;
     }
     throw error;
   }

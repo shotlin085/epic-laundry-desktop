@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { store, type MarketplaceOrderProjectionRecord, type MarketplaceOrderState } from '../../kernel/store.js';
 import { audit } from '../../kernel/audit.js';
-import { callConnectedCloudApi, getCloudConnectionStatus } from './cloud-session.js';
+import { callConnectedCloudApiEnvelope, getCloudConnectionStatus } from './cloud-session.js';
 import { createMarketplaceOrderRequest } from './order-truth.js';
 import type { FetchLike } from './cloud-client.js';
 
@@ -106,6 +106,43 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+const CLOUD_ORDER_PAGE_SIZE = 100;
+// The real backend currently offers offset pagination, not a stable cursor.
+// Bound one reconciliation pass rather than silently truncating an unusually
+// large vendor account or holding a Desktop process hostage forever.
+const MAX_CLOUD_ORDER_PAGES_PER_PULL = 1_000;
+
+type CloudOrderPage = { orders: unknown[]; totalPages?: number };
+
+function cloudOrderPage(raw: Record<string, unknown>): CloudOrderPage {
+  const orders = raw.data;
+  if (!Array.isArray(orders)) throw new Error('CLOUD_ORDER_LIST_UNEXPECTED_RESPONSE');
+  const meta = isRecord(raw.meta) ? raw.meta : undefined;
+  const pagination = meta && isRecord(meta.pagination) ? meta.pagination : undefined;
+  const totalPages = pagination && Number(pagination.totalPages);
+  if (totalPages !== undefined && (!Number.isSafeInteger(totalPages) || totalPages < 0)) {
+    throw new Error('CLOUD_ORDER_LIST_INVALID_PAGINATION');
+  }
+  return { orders, totalPages };
+}
+
+async function pullCloudOrderPages(tenant: string, fetchImpl?: FetchLike): Promise<unknown[]> {
+  const all: unknown[] = [];
+  for (let page = 1; page <= MAX_CLOUD_ORDER_PAGES_PER_PULL; page += 1) {
+    const envelope = await callConnectedCloudApiEnvelope(tenant, `/vendor/orders?page=${page}&limit=${CLOUD_ORDER_PAGE_SIZE}`, fetchImpl);
+    const result = cloudOrderPage(envelope);
+    all.push(...result.orders);
+    if (result.totalPages !== undefined) {
+      if (page >= result.totalPages) return all;
+    } else if (result.orders.length < CLOUD_ORDER_PAGE_SIZE) {
+      // Compatibility fallback for a deployed backend that has not yet
+      // supplied pagination metadata. A short page is an unambiguous end.
+      return all;
+    }
+  }
+  throw new Error('CLOUD_ORDER_SYNC_PAGE_LIMIT_EXCEEDED');
+}
+
 export type CloudOrderSyncSummary = { pulled: number; created: number; updated: number; skipped: Array<{ externalOrderId: string; reason: string }> };
 
 /**
@@ -129,8 +166,7 @@ export async function pullCloudOrders(tenant: string, actor: string, fetchImpl?:
   if (!status.connected) throw new Error('CLOUD_NOT_CONNECTED');
   if (!status.remoteVendorId) throw new Error('CLOUD_VENDOR_NOT_LINKED');
 
-  const raw = await callConnectedCloudApi(tenant, '/vendor/orders?limit=50', fetchImpl);
-  if (!Array.isArray(raw)) throw new Error('CLOUD_ORDER_LIST_UNEXPECTED_RESPONSE');
+  const raw = await pullCloudOrderPages(tenant, fetchImpl);
 
   const storeId = store.currentStore(tenant);
   const summary: CloudOrderSyncSummary = { pulled: raw.length, created: 0, updated: 0, skipped: [] };

@@ -828,6 +828,14 @@ separate device-envelope protocol:
   record can never cross into another store.
 - It calls the same `pullCloudOrders` connector used by the manual action. The
   local projection's immutable original request remains untouched.
+- The pull preserves the real backend's response envelope for this endpoint
+  rather than throwing away `meta.pagination` with the generic data reader.
+  It reads 100-order pages until the backend's declared end (bounded at 1,000
+  pages / 100,000 orders per pass). This replaces the former hard-coded
+  `limit=50` first-page pull, which would have silently hidden most work for a
+  growing vendor. The backend still has offset rather than cursor pagination;
+  the bounded scan is safe for the current contract, while cursor/snapshot
+  support remains the future consistency upgrade for very high write churn.
 - Migration 40 adds `marketplace_cloud_sync_health`. It records only
   operational telemetry: attempt/success time, last pull counts, sanitized
   failure reason, consecutive failures and next retry time. It is deliberately
@@ -853,7 +861,8 @@ revision. Local notes, preferences and links do not cause a cloud rewrite.
 Source verification is automated by:
 
 - `npm run test:marketplace-cloud-order-sync` — unchanged re-pulls write no
-  projection revision; a real state change advances exactly one revision.
+  projection revision; a real state change advances exactly one revision; a
+  205-order response proves all three backend pages materialize.
 - `npm run test:marketplace-cloud-auto-sync` — health persistence, bounded
   exponential backoff, recovery and disconnected-account safety.
 
