@@ -95,5 +95,6 @@ export async function pushStoreOrderIfLinked(tenant: string, actor: string, orde
     taxPaise: Math.round((Number(order.taxAmount) || 0) * 100),
     totalPaise: Math.round((Number(order.grandTotal) || 0) * 100),
     paymentMethod: order.paymentMode,
+    ...(order.walletAmountPaise ? { walletAmountPaise: order.walletAmountPaise, walletRedemptionRequestId: order.walletRedemptionRequestId } : {}),
   }, fetchImpl);
 }
