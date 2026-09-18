@@ -1,6 +1,7 @@
 import { getCloudConnectionStatus, postConnectedCloudApi } from './cloud-session.js';
 import { CloudClientError, type FetchLike } from './cloud-client.js';
 import { saveMarketplaceCustomerLink, listMarketplaceCustomerLinks } from './customer-links.js';
+import { createLaundryCustomer } from '../laundry/customers.js';
 import type { presentOrder } from '../laundry/domain.js';
 
 /**
@@ -18,6 +19,44 @@ function requireLinkedVendor(tenant: string) {
   if (!status.remoteVendorId) throw new Error('CLOUD_VENDOR_NOT_LINKED');
 }
 
+/**
+ * Resolves a phone number against the real LNDRY backend's own customer
+ * base — the only way to find a genuine signed-up LNDRY App customer who
+ * has never placed an order through this vendor before (a local-only
+ * search, or `listOnlineOnlyCustomers`, only ever finds customers this
+ * desktop has already seen). Returns null for a real 404 (no account for
+ * this phone — a normal, expected outcome), rethrows anything else.
+ */
+export async function resolveCloudCustomerByPhone(tenant: string, phone: string, fetchImpl?: FetchLike): Promise<{ userId: string; name?: string } | null> {
+  requireLinkedVendor(tenant);
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return null;
+  try {
+    return await postConnectedCloudApi(tenant, '/vendor/customers/resolve-phone', { phone: digits }, fetchImpl) as { userId: string; name?: string } | null;
+  } catch (error) {
+    if (error instanceof CloudClientError && error.httpStatus === 404) return null;
+    throw error;
+  }
+}
+
+/**
+ * Turns a real-account-but-not-yet-local-customer search result (see
+ * resolveCloudCustomerByPhone) into a genuine local customer the booking
+ * screen can select like any other — creates the local `party` record and
+ * links it to the real account in the same step, so a later store-order
+ * push for this same sale skips the resolve-phone round trip entirely
+ * (the existing-link fast path in pushStoreOrderIfLinked above). Caller is
+ * responsible for the store-scope wrap, same as any other laundry write.
+ */
+export function adoptRemoteCustomer(tenant: string, actor: string, input: { userId: string; name?: string; phone: string }) {
+  const customer = createLaundryCustomer(tenant, actor, {
+    name: input.name?.trim() || 'LNDRY App Customer',
+    phone: input.phone,
+  });
+  saveMarketplaceCustomerLink(tenant, actor, { customerId: customer.id, channel: 'CUSTOMER_APP', externalCustomerId: input.userId });
+  return customer;
+}
+
 type PresentedOrder = ReturnType<typeof presentOrder>;
 
 export async function pushStoreOrderIfLinked(tenant: string, actor: string, order: PresentedOrder, fetchImpl?: FetchLike): Promise<void> {
@@ -31,16 +70,8 @@ export async function pushStoreOrderIfLinked(tenant: string, actor: string, orde
   let remoteUserId = existingLink?.externalCustomerId;
 
   if (!remoteUserId) {
-    const phone = String(order.customer.phone || '').replace(/\D/g, '');
-    if (!phone) return;
-    let resolved: { userId?: string } | null = null;
-    try {
-      resolved = await postConnectedCloudApi(tenant, '/vendor/customers/resolve-phone', { phone }, fetchImpl) as { userId?: string } | null;
-    } catch (error) {
-      if (error instanceof CloudClientError && error.httpStatus === 404) return; // no real account for this phone — normal, not an error
-      throw error;
-    }
-    if (!resolved?.userId) return;
+    const resolved = await resolveCloudCustomerByPhone(tenant, order.customer.phone, fetchImpl);
+    if (!resolved?.userId) return; // no real account for this phone — normal, not an error
     remoteUserId = resolved.userId;
     saveMarketplaceCustomerLink(tenant, actor, { customerId: localCustomerId, channel: 'CUSTOMER_APP', externalCustomerId: remoteUserId });
   }
