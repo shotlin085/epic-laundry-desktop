@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Activity, BarChart3, CalendarDays, CircleDollarSign, RefreshCw, Sparkles, UsersRound } from 'lucide-react'
+import { Activity, BarChart3, CalendarDays, CircleDollarSign, Cloud, RefreshCw, Sparkles, UsersRound } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
@@ -20,6 +20,10 @@ type Statistics = {
   customerFrequency: { total: number; repeatCustomers: number; breakdown: Array<{ customer: string; visits: number }> }
   newCustomer: { total: number; daily: Array<{ date: string; count: number }> }
   serviceMix: Array<{ service: string; quantity: number; amount: number }>
+  // Real mobile-app (marketplace) orders for this period — pre-finalization
+  // estimates, deliberately kept separate from the counter-only figures
+  // above, same split Dashboard already shows.
+  online: { count: number; estimatedRevenue: number; topGarments: Array<{ name: string; quantity: number; amount: number }> }
 }
 
 // Overview is a brand surface, not a second teal application. Keep comparison
@@ -54,7 +58,7 @@ export default function LaundryStatistics() {
         <div className="flex items-start gap-4"><div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-white/95 p-2 shadow-lg shadow-brand-950/20"><img src={lndryBrand.mark} alt="Lndry" className="h-full w-full object-contain" /></div><div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-brand-200">Laundry intelligence</p><h1 className="mt-1 font-serif text-3xl md:text-4xl">Overview</h1><p className="mt-2 max-w-xl text-sm text-white/75">A live pulse of orders, revenue, collections, customers and garment demand.</p></div></div>
         <div className="flex flex-wrap items-center gap-2"><div className="inline-flex rounded-xl border border-brand-100/25 bg-white/10 p-1" role="group" aria-label="Statistics period">{(['today', 'week', 'lifetime'] as Period[]).map((value) => <button key={value} type="button" aria-pressed={period === value} onClick={() => setPeriod(value)} className={cn('rounded-lg px-3 py-2 text-xs font-bold transition', period === value ? 'bg-white text-brand-900 shadow-sm' : 'text-white/75 hover:bg-white/10')}>{value === 'today' ? 'Today' : value === 'week' ? 'Last 7 days' : 'Lifetime'}</button>)}</div><button type="button" onClick={() => void statistics.refetch()} className="grid h-10 w-10 place-items-center rounded-xl border border-brand-100/25 bg-white/10 text-white hover:bg-white/20" aria-label="Refresh statistics"><RefreshCw className="h-4 w-4" /></button></div>
       </div>
-      <div className="mt-7 flex flex-wrap items-center gap-3 text-xs text-white/70"><span className="inline-flex items-center gap-2 rounded-full border border-brand-100/15 bg-white/10 px-3 py-1.5"><Sparkles className="h-3.5 w-3.5 text-brand-200" />Demo-ready overview data</span><span>Range: {shortDate(data.from)} – {shortDate(data.to)}</span><span className="hidden sm:inline">·</span><span>Updated just now</span></div>
+      <div className="mt-7 flex flex-wrap items-center gap-3 text-xs text-white/70"><span className="inline-flex items-center gap-2 rounded-full border border-brand-100/15 bg-white/10 px-3 py-1.5"><Sparkles className="h-3.5 w-3.5 text-brand-200" />Live from your posted records</span><span>Range: {shortDate(data.from)} – {shortDate(data.to)}</span><span className="hidden sm:inline">·</span><span>Updated just now</span></div>
     </div>
 
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
@@ -73,10 +77,15 @@ export default function LaundryStatistics() {
       <Panel eyebrow="Customer frequency" title="Visits by customer"><div className="grid items-center gap-4 md:grid-cols-[180px_1fr]"><Donut rows={data.customerFrequency.breakdown.slice(0, 6).map((row) => ({ name: row.customer, value: row.visits }))} /><Legend rows={data.customerFrequency.breakdown.slice(0, 6).map((row) => ({ name: row.customer, value: row.visits }))} /></div></Panel>
       <Panel eyebrow="New customer" title="Acquisition trend"><Chart data={data.newCustomer.daily.map((row) => ({ date: shortDate(row.date), value: row.count }))} dataKey="value" /></Panel>
       <Panel eyebrow="Collection" title="Daily receipts"><Chart data={data.collection.daily.map((row) => ({ date: shortDate(row.date), value: row.amount }))} dataKey="value" currency /></Panel>
+      <Panel eyebrow="Marketplace" title="Online orders (mobile app)" action={<span className="inline-flex items-center gap-1.5 text-xs text-[#718087]"><Cloud className="h-3.5 w-3.5 text-brand-600" />{rangeLabel}</span>}>
+        <div className="grid grid-cols-2 gap-3"><div className="rounded-2xl bg-brand-50 p-3"><p className="text-[10px] font-bold uppercase tracking-[.13em] text-brand-700">Orders</p><p className="mt-1 font-serif text-2xl text-[#17353c]">{data.online.count}</p></div><div className="rounded-2xl bg-brand-50 p-3"><p className="text-[10px] font-bold uppercase tracking-[.13em] text-brand-700">Revenue (est.)</p><p className="mt-1 font-serif text-2xl text-[#17353c]">{formatINR(data.online.estimatedRevenue)}</p></div></div>
+        <p className="mt-2 text-[11px] text-[#8b959a]">Pre-reconciliation estimate from real pulled orders — kept separate from the counter revenue above.</p>
+        <div className="mt-4"><p className="mb-2 text-[10px] font-bold uppercase tracking-[.13em] text-[#718087]">Top online garments</p><Legend rows={data.online.topGarments.map((row) => ({ name: row.name, value: row.amount }))} /></div>
+      </Panel>
       <Panel eyebrow="Garment services" title="Service demand"><ChartAccessibility label="Revenue by laundry service" summary={serviceSummary} className="h-64"><ResponsiveContainer width="100%" height="100%"><BarChart data={data.serviceMix.slice(0, 8)} layout="vertical" margin={{ top: 0, right: 8, left: 12, bottom: 0 }}><CartesianGrid horizontal={false} stroke="#ece8fb" /><XAxis type="number" hide /><YAxis type="category" dataKey="service" width={92} tick={{ fontSize: 10, fill: '#5e7074' }} axisLine={false} tickLine={false} /><Tooltip formatter={(value: unknown) => formatINR(Number(value || 0))} /><Bar dataKey="amount" name="Revenue" fill="#664CF0" radius={[0, 5, 5, 0]} barSize={18}>{data.serviceMix.slice(0, 8).map((_, index) => <Cell key={index} fill={palette[index % palette.length]} />)}</Bar></BarChart></ResponsiveContainer></ChartAccessibility></Panel>
       <Panel eyebrow="Throughput" title="Orders by day"><ChartAccessibility label="Orders by day" summary={orderSummary} className="h-64"><ResponsiveContainer width="100%" height="100%"><BarChart data={data.ordersReview.daily} margin={{ top: 8, right: 4, left: -18, bottom: 0 }}><CartesianGrid vertical={false} stroke="#ece8fb" /><XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 10, fill: '#7b8b8d' }} axisLine={false} tickLine={false} /><YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#7b8b8d' }} axisLine={false} tickLine={false} /><Tooltip formatter={(value: unknown) => [String(value ?? 0), 'Orders']} /><Bar dataKey="orders" name="Orders" fill="#241A45" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></ChartAccessibility></Panel>
     </div>
-    <div className="flex flex-col gap-3 rounded-2xl border border-brand-200 bg-brand-50 px-5 py-4 text-xs text-[#5e7074] sm:flex-row sm:items-center sm:justify-between"><span><strong className="text-[#17353c]">Overview is powered by posted store records.</strong> Use Reports for invoice, balance, pickup and rider-level drill-downs.</span><Link to="/laundry/reports" className="font-bold text-brand-600 hover:text-brand-700">Open reports →</Link></div>
+    <div className="flex flex-col gap-3 rounded-2xl border border-brand-200 bg-brand-50 px-5 py-4 text-xs text-[#5e7074] sm:flex-row sm:items-center sm:justify-between"><span><strong className="text-[#17353c]">Overview is powered by posted store records.</strong> Use Reports for invoice, balance, pickup and captain-level drill-downs.</span><Link to="/laundry/reports" className="font-bold text-brand-600 hover:text-brand-700">Open reports →</Link></div>
   </div>
 }
 

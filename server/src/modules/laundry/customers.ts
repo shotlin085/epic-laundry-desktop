@@ -347,6 +347,30 @@ export function searchCustomerRecords(tenant: string, search = '') {
   return store.rowsOf(tenant, 'party').filter((row) => row.entity === 'party' && row.data.is_customer).filter((row) => !needle || `${row.data.name || ''} ${row.data.phone || ''}`.toLowerCase().includes(needle) || invoiceMatches.has(row.id)).slice(0, 30).map((row) => ({ ...presentCustomer(row), matchedBy: invoiceMatches.has(row.id) && !`${row.data.name || ''} ${row.data.phone || ''}`.toLowerCase().includes(needle) ? 'invoice' : 'identity' }));
 }
 
+/**
+ * Real online (marketplace-app) customers who don't have a local `party`
+ * record yet — deliberately read-only and kept separate from
+ * `searchCustomerRecords` above, since these customers have no local
+ * address/ledger/wallet/reward history until their first order actually
+ * goes through local intake (`edge-sync.ts#materializeMarketplaceOrder`).
+ * Surfacing them here answers "who's actually ordering online" without
+ * pretending they're full local customer records.
+ */
+export function listOnlineOnlyCustomers(tenant: string) {
+  const localPhones = new Set(store.rowsOf(tenant, 'party').filter((row) => row.data.is_customer).map((row) => normPhone(row.data.phone)).filter(Boolean));
+  const byPhone = new Map<string, { name: string; phone: string; orderCount: number; lastOrderAt: string }>();
+  for (const order of store.listMarketplaceOrderProjections(tenant)) {
+    const customer = order.customer as Record<string, unknown> | undefined;
+    const phone = normPhone(customer?.phone);
+    if (!phone || localPhones.has(phone)) continue;
+    const existing = byPhone.get(phone);
+    const name = String(customer?.name || existing?.name || 'Online customer');
+    if (existing) { existing.orderCount += 1; if (order.createdAt > existing.lastOrderAt) existing.lastOrderAt = order.createdAt; }
+    else byPhone.set(phone, { name, phone, orderCount: 1, lastOrderAt: order.createdAt });
+  }
+  return [...byPhone.values()].sort((a, b) => b.lastOrderAt.localeCompare(a.lastOrderAt));
+}
+
 function customerLedger(tenant: string, customer: string) {
   const normalized = store.listCustomerLedgerEntries(tenant, customer);
   const normalizedIds = new Set(normalized.map((entry) => entry.id));

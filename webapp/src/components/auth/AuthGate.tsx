@@ -1,6 +1,6 @@
 import { type FormEvent, type ReactNode, useEffect, useState } from 'react'
-import { ArrowLeft, CheckCircle2, KeyRound, MonitorPlay, ShieldCheck, Sparkles } from 'lucide-react'
-import { apiGet, apiPost } from '@/lib/api'
+import { ArrowLeft, CheckCircle2, KeyRound, MonitorPlay, Phone, ShieldCheck, Sparkles } from 'lucide-react'
+import { apiGet, apiPost, operatorErrorMessage } from '@/lib/api'
 import { lndryBrand } from '@/assets/generated/manifest'
 
 type Session = { user: { username: string; roles: string[]; tenant: string; storeId: string } | null }
@@ -17,13 +17,17 @@ function readSetupDraft() {
 }
 
 export function AuthGate({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<'loading' | 'bootstrap' | 'signin' | 'ready'>('loading')
+  const [state, setState] = useState<'loading' | 'bootstrap' | 'signin' | 'cloud-login' | 'ready'>('loading')
   const [workspace, setWorkspace] = useState<WorkspaceMode>('production')
   const initialDraft = readSetupDraft()
   const [setupStep, setSetupStep] = useState<1 | 2 | 3>(initialDraft.step)
   const [setup, setSetup] = useState<Setup>(initialDraft.setup)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [cloudPhone, setCloudPhone] = useState('')
+  const [cloudOtp, setCloudOtp] = useState('')
+  const [cloudOtpSent, setCloudOtpSent] = useState(false)
+  const [cloudDevOtp, setCloudDevOtp] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [backupConfigured, setBackupConfigured] = useState(false)
@@ -48,13 +52,18 @@ export function AuthGate({ children }: { children: ReactNode }) {
     Promise.all([apiGet<Session>('/auth/session').catch(() => null), apiGet<{ needsBootstrap: boolean }>('/auth/bootstrap-status'), workspaceStatus])
       .then(([session, bootstrap, desktopWorkspace]) => {
         setWorkspace(desktopWorkspace.mode)
-        if (!session?.user && !bootstrap.needsBootstrap && desktopWorkspace.mode === 'demo') {
-          setUsername('demo')
-          setPassword('DemoLaundry!2026')
-        }
-        setState(session?.user ? 'ready' : bootstrap.needsBootstrap ? 'bootstrap' : 'signin')
+        if (session?.user) { setState('ready'); return }
+        // Production has exactly one door in: real vendor phone+OTP against
+        // the real backend (see cloud-auth.ts) — there is no local
+        // username/password bootstrap step to route to here at all, whether
+        // or not a local identity already exists. Only the isolated demo
+        // workspace keeps the original bootstrap/sign-in flow, since it has
+        // no real backend account to verify against.
+        if (desktopWorkspace.mode === 'production') { setState('cloud-login'); return }
+        if (!bootstrap.needsBootstrap) { setUsername('demo'); setPassword('DemoLaundry!2026') }
+        setState(bootstrap.needsBootstrap ? 'bootstrap' : 'signin')
       })
-      .catch(() => { setError('The local Epic server is unavailable. Check that the desktop application is running.'); setState('signin') })
+      .catch(() => { setError('The local Epic server is unavailable. Check that the desktop application is running.'); setState('cloud-login') })
   }, [])
 
   async function chooseWorkspace(mode: WorkspaceMode) {
@@ -76,24 +85,45 @@ export function AuthGate({ children }: { children: ReactNode }) {
     if (state === 'bootstrap' && setup.password !== setup.confirmPassword) { setError('Passwords do not match.'); return }
     setSaving(true)
     try {
+      if (state === 'cloud-login') {
+        if (!cloudOtpSent) {
+          const result = await apiPost<{ sent: true; otp?: string }>('/auth/cloud/otp', { phone: cloudPhone })
+          setCloudOtpSent(true)
+          setCloudDevOtp(result.otp || '')
+          if (result.otp) setCloudOtp(result.otp)
+          return
+        }
+        await apiPost('/auth/cloud/verify', { phone: cloudPhone, otp: cloudOtp })
+        setState('ready'); setCloudOtp(''); setCloudOtpSent(false); setCloudDevOtp('')
+        return
+      }
       if (state === 'bootstrap') {
         await apiPost('/auth/bootstrap', setup)
         try { window.localStorage.removeItem(SETUP_DRAFT_KEY) } catch { /* best effort */ }
       }
       else await apiPost('/auth/sign-in', { username, password })
       setState('ready'); setPassword(''); setSetup((current) => ({ ...current, password: '', confirmPassword: '' }))
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to sign in.') } finally { setSaving(false) }
+    } catch (cause) { setError(operatorErrorMessage(cause, 'Unable to sign in.')) } finally { setSaving(false) }
   }
 
   if (state === 'ready') return <>{children}</>
   if (state === 'loading') return <main className="grid min-h-screen place-items-center bg-[#f3f1ec] text-[#17363e]"><p className="rounded-xl border border-[#17363e]/10 bg-white px-5 py-3 text-sm shadow-sm">Opening your secure local workspace…</p></main>
+  if (state === 'cloud-login') return <CloudLoginScreen
+    phone={cloudPhone} setPhone={setCloudPhone}
+    otp={cloudOtp} setOtp={setCloudOtp}
+    otpSent={cloudOtpSent}
+    devOtp={cloudDevOtp}
+    error={error} saving={saving}
+    onSubmit={submit}
+    onOpenDemo={() => void chooseWorkspace('demo')}
+  />
 
   const bootstrap = state === 'bootstrap'
   const demo = workspace === 'demo'
   return <main className="grid min-h-screen place-items-center bg-[#f3f1ec] p-5 text-[#17363e]">
     <section className="w-full max-w-xl rounded-3xl border border-[#17363e]/10 bg-white p-7 shadow-[0_24px_70px_rgba(18,48,57,.14)]">
       <div className="mb-7 flex items-start justify-between gap-4"><div className="flex items-start gap-4"><span className="grid h-12 w-12 place-items-center overflow-hidden rounded-2xl bg-white shadow-sm"><img src={lndryBrand.mark} alt="Lndry" className="h-full w-full object-cover" /></span><div><p className="text-xs font-bold uppercase tracking-[.16em] text-[#3a7d78]">Epic Laundry desktop</p><h1 className="mt-1 font-serif text-2xl">{bootstrap ? 'Set up your workspace' : 'Welcome back'}</h1></div></div><ModeBadge demo={demo} /></div>
-      {bootstrap ? <p className="mb-5 text-sm leading-6 text-[#617178]">{demo ? 'You are creating an isolated training workspace. It includes clearly marked sample activity and can be reset without touching your live records.' : 'You are creating a live production workspace. No example customers, orders, riders, payments or expenses will be added.'}</p> : <p className="mb-6 text-sm leading-6 text-[#617178]">Sign in to open your authorised counter workspace.</p>}
+      {bootstrap ? <p className="mb-5 text-sm leading-6 text-[#617178]">{demo ? 'You are creating an isolated training workspace. It includes clearly marked sample activity and can be reset without touching your live records.' : 'You are creating a live production workspace. No example customers, orders, captains, payments or expenses will be added.'}</p> : <p className="mb-6 text-sm leading-6 text-[#617178]">Sign in to open your authorised counter workspace.</p>}
       {bootstrap ? <div className="mb-6 grid gap-2 sm:grid-cols-3"><Step active={setupStep === 1} done={setupStep > 1} label="Business" /><Step active={setupStep === 2} done={setupStep > 2} label="Owner access" /><Step active={setupStep === 3} label="Operations" /></div> : null}
       {bootstrap ? <WorkspaceChoice active={workspace} disabled={saving} onChoose={chooseWorkspace} /> : null}
       <form className="mt-6 space-y-4" onSubmit={submit}>
@@ -102,6 +132,36 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <div className="flex gap-3">{bootstrap && setupStep > 1 ? <button type="button" onClick={() => setSetupStep((setupStep - 1) as 1 | 2)} className="inline-flex items-center gap-2 rounded-xl border border-[#17363e]/15 px-4 py-3 text-sm font-semibold text-[#31484d]"><ArrowLeft className="h-4 w-4" />Back</button> : null}<button disabled={saving} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#123039] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#1d4a53] disabled:cursor-not-allowed disabled:opacity-60"><KeyRound className="h-4 w-4" />{saving ? 'Please wait…' : bootstrap && setupStep < 3 ? 'Continue' : bootstrap ? 'Finish secure setup' : 'Sign in'}</button></div>
       </form>
       {bootstrap ? <div className="mt-5 rounded-xl bg-[#f4f8f5] p-4 text-xs leading-5 text-[#587177]"><strong className="text-[#26494b]">What happens next:</strong> default services and garments are created as editable master data. Your tax, currency, timezone, printer profile and optional backup destination are saved with this branch; catalogue import remains authenticated owner-only work and is available from the readiness checklist after setup. Your business details and current step are saved as a local draft if the desktop is restarted; passwords are never saved.</div> : <>{demo ? <div className="mt-5 rounded-xl border border-[#e6c56e]/60 bg-[#fff8e8] p-4 text-xs leading-5 text-[#745516]"><strong className="text-[#62440e]">Demo access</strong><span className="ml-1">is prefilled for this isolated training workspace: username <code className="rounded bg-white/70 px-1 py-0.5 font-mono">demo</code> and password <code className="rounded bg-white/70 px-1 py-0.5 font-mono">DemoLaundry!2026</code>.</span></div> : null}<button type="button" disabled={saving} onClick={() => void chooseWorkspace(demo ? 'production' : 'demo')} className="mt-5 inline-flex items-center gap-2 text-xs font-semibold text-[#39786f]"><MonitorPlay className="h-4 w-4" />{demo ? 'Return to production workspace' : 'Open isolated demo workspace'}</button></>}
+    </section>
+  </main>
+}
+
+function CloudLoginScreen({ phone, setPhone, otp, setOtp, otpSent, devOtp, error, saving, onSubmit, onOpenDemo }: {
+  phone: string; setPhone: (value: string) => void; otp: string; setOtp: (value: string) => void; otpSent: boolean; devOtp: string;
+  error: string; saving: boolean; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onOpenDemo: () => void;
+}) {
+  return <main className="grid min-h-screen place-items-center bg-[#f3f1ec] p-5 text-[#17363e]">
+    <section className="w-full max-w-md rounded-3xl border border-[#17363e]/10 bg-white p-7 shadow-[0_24px_70px_rgba(18,48,57,.14)]">
+      <div className="mb-7 flex items-start gap-4">
+        <span className="grid h-12 w-12 place-items-center overflow-hidden rounded-2xl bg-white shadow-sm"><img src={lndryBrand.mark} alt="Lndry" className="h-full w-full object-cover" /></span>
+        <div><p className="text-xs font-bold uppercase tracking-[.16em] text-[#3a7d78]">Epic Laundry desktop</p><h1 className="mt-1 font-serif text-2xl">Sign in with your LNDRY vendor number</h1></div>
+      </div>
+      <p className="mb-6 text-sm leading-6 text-[#617178]">This is your real LNDRY marketplace account — the same number you use on the Vendor App. Only a shop owner or staff phone can open this desktop; Captain (delivery) accounts don't have access here.</p>
+      <form className="space-y-4" onSubmit={onSubmit}>
+        <label className="block text-sm font-semibold">Registered phone number
+          <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-[#17363e]/15 px-3 focus-within:ring-2 focus-within:ring-[#3a7d78]">
+            <Phone className="h-4 w-4 shrink-0 text-[#8b959a]" />
+            <input type="tel" inputMode="numeric" pattern="[0-9]{10}" maxLength={10} required disabled={otpSent} autoFocus value={phone} onChange={(event) => setPhone(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" className="h-11 w-full bg-transparent font-normal outline-none disabled:text-[#8b959a]" />
+          </div>
+        </label>
+        {otpSent ? <Field label="One-time code" required autoComplete="one-time-code" value={otp} onChange={setOtp} placeholder="6-digit code" /> : null}
+        {otpSent && devOtp ? <p className="rounded-xl border border-[#e6c56e]/60 bg-[#fff8e8] px-3 py-2 text-xs leading-5 text-[#745516]"><strong className="text-[#62440e]">Demo OTP:</strong> <code className="rounded bg-white/70 px-1.5 py-0.5 font-mono text-sm">{devOtp}</code> — no real SMS provider is connected yet, so the code is shown here instead.</p> : null}
+        {error ? <p role="alert" className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+        <button disabled={saving} className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#123039] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#1d4a53] disabled:cursor-not-allowed disabled:opacity-60">
+          <KeyRound className="h-4 w-4" />{saving ? 'Please wait…' : otpSent ? 'Verify and sign in' : 'Send code'}
+        </button>
+      </form>
+      <button type="button" disabled={saving} onClick={onOpenDemo} className="mt-5 inline-flex items-center gap-2 text-xs font-semibold text-[#39786f]"><MonitorPlay className="h-4 w-4" />Open isolated demo workspace instead</button>
     </section>
   </main>
 }

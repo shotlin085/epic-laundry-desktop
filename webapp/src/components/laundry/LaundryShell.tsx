@@ -34,7 +34,7 @@ const navigation: Array<{ to: string; label: string; icon: typeof LayoutDashboar
   { to: '/laundry/routes', label: 'Route runs', icon: RouteIcon, permission: 'routes.read' },
   { to: '/laundry/cash-closing', label: 'Cash closing', icon: Banknote, permission: 'cash.read' },
   { to: '/laundry/print-centre', label: 'Print centre', icon: Printer, permission: 'orders.read' },
-  { to: '/laundry/settlements', label: 'Rider settlements', icon: CircleDollarSign, permission: 'orders.read' },
+  { to: '/laundry/settlements', label: 'Captain settlements', icon: CircleDollarSign, permission: 'orders.read' },
   { to: '/laundry/dispatch', label: 'Pickup & delivery', icon: Bike, permission: 'orders.read' },
   { to: '/laundry/expenses', label: 'Store expense', icon: WalletCards, permission: 'expenses.create' },
   { to: '/laundry/import-prices', label: 'Import prices', icon: Upload, permission: 'settings.manage' },

@@ -7,7 +7,7 @@ import { formatINR } from '@/lib/utils'
 import VisualEmptyState from '@/components/laundry/VisualEmptyState'
 
 const reports = [
-  ['invoice', 'Invoice Report'], ['collection', 'Collection Report'], ['order', 'Order Report'], ['consolidated-invoices', 'Consolidated Invoices'], ['customer', 'Customer Report'], ['customer-package', 'Customer Package Report'], ['customer-list', 'Customer List'], ['growth', 'Growth Report'], ['discount', 'Discount Report'], ['expense', 'Expense Report'], ['balance', 'Balance Report'], ['pickup', 'Pickup Overview'], ['rider-delivery', 'Rider Delivery'], ['rider-collection', 'Rider Collection'], ['warehouse-user-work', 'Warehouse User Work Report'],
+  ['invoice', 'Invoice Report'], ['collection', 'Collection Report'], ['order', 'Order Report'], ['consolidated-invoices', 'Consolidated Invoices'], ['customer', 'Customer Report'], ['customer-package', 'Customer Package Report'], ['customer-list', 'Customer List'], ['growth', 'Growth Report'], ['discount', 'Discount Report'], ['expense', 'Expense Report'], ['balance', 'Balance Report'], ['pickup', 'Pickup Overview'], ['rider-delivery', 'Captain Delivery'], ['rider-collection', 'Captain Collection'], ['warehouse-user-work', 'Warehouse User Work Report'],
 ] as const
 
 type Detail = {

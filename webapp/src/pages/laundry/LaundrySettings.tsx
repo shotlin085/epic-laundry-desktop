@@ -380,7 +380,7 @@ const roleLabels: Record<Role, string> = {
   owner: "Owner",
   counter_staff: "Counter",
   processing_staff: "Processing",
-  rider: "Rider",
+  rider: "Captain",
 };
 
 const settingsAreas = [
@@ -594,10 +594,10 @@ export default function LaundrySettings() {
       apiPatch<Staff>(`/settings/staff/${id}`, { riderId }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["store-staff"] });
-      setNotice("Rider account linkage updated and audited.");
+      setNotice("Captain account linkage updated and audited.");
     },
     onError: (error: Error) =>
-      setNotice(error.message || "Could not update rider linkage."),
+      setNotice(error.message || "Could not update captain linkage."),
   });
   const resetPassword = useMutation({
     mutationFn: ({ id, password }: { id: string; password: string }) =>

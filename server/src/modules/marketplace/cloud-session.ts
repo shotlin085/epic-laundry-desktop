@@ -93,10 +93,43 @@ function defaultFetch(): FetchLike {
   return (globalThis as { fetch: FetchLike }).fetch;
 }
 
-export async function requestCloudOtp(phone: string, fetchImpl: FetchLike = defaultFetch()): Promise<{ sent: true }> {
+export async function requestCloudOtp(phone: string, fetchImpl: FetchLike = defaultFetch()): Promise<{ sent: true; otp?: string }> {
   const baseUrl = requireConfigured();
-  await cloudClient.sendOtp(fetchImpl, baseUrl, phone);
-  return { sent: true };
+  const { otp } = await cloudClient.sendOtp(fetchImpl, baseUrl, phone);
+  return { sent: true, otp };
+}
+
+/**
+ * A read-only pre-check for the primary desktop login gate (`cloud-auth.ts`)
+ * — verifies the OTP and returns just the account's role facts, without
+ * persisting a connection. The caller decides whether to proceed to a real
+ * persisting connect after checking the role.
+ *
+ * CORRECTION (live-tested 2026-09-17 against real production): the
+ * `auth.service.js`-reading claim this comment used to make — that the real
+ * backend never invalidates an OTP challenge after one successful verify —
+ * is wrong in practice. A second `verify-otp` call with the same
+ * still-"unexpired" code reliably 400s with `INVALID_OTP` once the first
+ * call has already succeeded (reproduced via bare curl: verify → verify
+ * again with the identical body → the second call fails). Whatever the
+ * backend does internally (mark-used flag, single-attempt token, etc.),
+ * empirically the challenge is single-use. So the login gate must NOT call
+ * `connectCloudSession` with the same `{phone, otp}` after this — that would
+ * be a second verify and would always fail. Use `persistCloudSession` with
+ * the tokens this call already returned instead (see `authenticateWithCloud`
+ * in `cloud-auth.ts`).
+ */
+export async function verifyCloudOtpForLogin(phone: string, otp: string, fetchImpl: FetchLike = defaultFetch()) {
+  const baseUrl = requireConfigured();
+  return cloudClient.verifyOtp(fetchImpl, baseUrl, phone, otp);
+}
+
+/** Every role linked to this phone (`["CUSTOMER", "VENDOR_OWNER"]`, etc.) —
+ * see `cloud-client.ts#getMyRoles`'s header for why this, not verify-otp's
+ * own response, is the reliable source for the login gate's role check. */
+export async function getMyRolesForLogin(accessToken: string, fetchImpl: FetchLike = defaultFetch()): Promise<string[]> {
+  const baseUrl = requireConfigured();
+  return cloudClient.getMyRoles(fetchImpl, baseUrl, accessToken);
 }
 
 /**
@@ -118,16 +151,22 @@ export async function requestCloudOtp(phone: string, fetchImpl: FetchLike = defa
  * using whatever default scope `verify-otp` grants; narrowing that is a
  * documented next step, not something silently papered over here.
  */
-export async function connectCloudSession(
+/**
+ * Persists a connection from an ALREADY-VERIFIED token pair — no OTP, no
+ * verify-otp call. Split out from `connectCloudSession` so a caller that has
+ * just verified an OTP itself (e.g. the login gate in `cloud-auth.ts`) can
+ * reuse those tokens directly instead of verifying the same one-time code a
+ * second time, which the real backend rejects (see `verifyCloudOtpForLogin`'s
+ * header comment).
+ */
+export async function persistCloudSession(
   tenant: string,
   actor: string,
-  input: { phone: string; otp: string },
+  initialTokens: CloudTokens,
+  phone: string,
   fetchImpl: FetchLike = defaultFetch(),
 ): Promise<CloudConnectionStatus> {
   const baseUrl = requireConfigured();
-  const phone = String(input.phone || '').trim();
-  const otp = String(input.otp || '').trim();
-  if (!phone || !otp) throw new Error('CLOUD_CONNECT_INPUT_REQUIRED');
 
   // verify-otp's own access token carries only { id, phone, role: 'CUSTOMER' }
   // — no shopId/shopRole claim. The real backend only embeds those on
@@ -141,7 +180,6 @@ export async function connectCloudSession(
   // stored, means the persisted token always carries shopRole from the
   // start rather than depending on an unrelated future request to backfill
   // it by accident.
-  const initialTokens = await cloudClient.verifyOtp(fetchImpl, baseUrl, phone, otp);
   const tokens = await cloudClient.refreshAccessToken(fetchImpl, baseUrl, initialTokens.refreshToken);
   const profile = await cloudClient.getSession(fetchImpl, baseUrl, tokens.accessToken);
   const vendor = await cloudClient.getVendorProfile(fetchImpl, baseUrl, tokens.accessToken);
@@ -167,6 +205,24 @@ export async function connectCloudSession(
   // never inherit a previous connection's success/failure indicator.
   store.deleteMarketplaceCloudSyncHealth(tenant);
   return getCloudConnectionStatus(tenant);
+}
+
+/** Verifies the OTP itself, then persists via `persistCloudSession`. Used by
+ * the Settings-page reconnect flow, which (unlike the login gate) has not
+ * already verified this OTP itself. */
+export async function connectCloudSession(
+  tenant: string,
+  actor: string,
+  input: { phone: string; otp: string },
+  fetchImpl: FetchLike = defaultFetch(),
+): Promise<CloudConnectionStatus> {
+  const baseUrl = requireConfigured();
+  const phone = String(input.phone || '').trim();
+  const otp = String(input.otp || '').trim();
+  if (!phone || !otp) throw new Error('CLOUD_CONNECT_INPUT_REQUIRED');
+
+  const initialTokens = await cloudClient.verifyOtp(fetchImpl, baseUrl, phone, otp);
+  return persistCloudSession(tenant, actor, initialTokens, phone, fetchImpl);
 }
 
 export function getCloudConnectionStatus(tenant: string): CloudConnectionStatus {

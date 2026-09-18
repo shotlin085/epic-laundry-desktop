@@ -25,7 +25,7 @@ function canonicalTaxEvidenceConfigured(tenant: string) {
   return Boolean(store.getStoreSettings(tenant).taxMode === 'gst' && supplierTaxProfile(tenant) && store.rowsOf(tenant, 'tax_policy_rule').some((row) => row.status === 'Approved' && row.data?.approvalStatus === 'Approved'));
 }
 
-function inferredGarmentVisualKey(name: string, category: string) {
+export function inferredGarmentVisualKey(name: string, category: string) {
   const value = `${name} ${category}`.toLowerCase();
   if (/shoe|sneaker|slipper|footwear/.test(value)) return 'shoePair';
   if (/bag|handbag|purse|luggage/.test(value)) return 'handbag';
@@ -92,6 +92,12 @@ type BookInput = {
   notes?: string;
   photoPaths?: string;
   placeOfSupply?: string;
+  /** A wallet redemption already CONFIRMED against the real LNDRY backend
+   * before this order is booked (the OTP-confirm step already moved the
+   * money) — this just records that fact on the order and folds it in as
+   * a second payment leg. `paymentMode`'s existing meaning is untouched:
+   * it covers whatever remains after the wallet amount. */
+  walletRedemption?: { requestId: string; amountPaise: number };
 };
 
 type QuotedItem = {
@@ -512,18 +518,39 @@ export function bookLaundryOrder(tenant: string, actor: string, input: BookInput
   if (process.env.EPIC_TEST_BOOKING_FAIL_AT === 'after-invoice') {
     throw new Error('forced booking failure after invoice');
   }
+  // A wallet redemption is a SECOND payment leg, not a replacement for
+  // paymentMode — the OTP-confirm step already moved the real money on
+  // Lndry_backend before this booking call ever happened; this just
+  // records that fact as its own payment_entry (mode 'LNDRY Wallet',
+  // referencing the real redemption request id) and reduces what
+  // paymentMode's own entry needs to cover to whatever remains.
+  const walletAmountRupees = input.walletRedemption
+    ? Math.max(0, Math.min(Math.round((Number(input.walletRedemption.amountPaise) || 0)) / 100, quote.grandTotal))
+    : 0;
+  const remainderAfterWallet = round(quote.grandTotal - walletAmountRupees);
+  let walletPaymentEntry: EntityRow | undefined;
+  if (walletAmountRupees > 0 && input.walletRedemption) {
+    walletPaymentEntry = createRow(tenant, actor, 'payment_entry', {
+      payment_type: 'Receive', party: customer.id, posting_date: orderDate, mode: 'LNDRY Wallet',
+      amount: walletAmountRupees, against_sales: submittedInvoice.id, reference: input.walletRedemption.requestId, provider_status: 'Manual',
+      remarks: `Wallet redemption for ${submittedInvoice.data.name}`,
+    });
+    submitRow(tenant, actor, 'payment_entry', walletPaymentEntry.id);
+    store.appendFinancialDocument({ id: `doc:${walletPaymentEntry.id}`, tenant, storeId: store.currentStore(tenant), documentType: 'payment', sourceEntity: 'payment_entry', sourceId: walletPaymentEntry.id, amountPaise: parseMoney(walletAmountRupees, 'wallet payment amount'), currency: 'INR', status: walletPaymentEntry.status, occurredAt: walletPaymentEntry.created_at, actor, metadata: { mode: 'LNDRY Wallet', invoiceId: submittedInvoice.id, walletRedemptionRequestId: input.walletRedemption.requestId } });
+    store.appendFinancialEntry({ id: `money:${walletPaymentEntry.id}:collection`, tenant, storeId: store.currentStore(tenant), kind: 'collection', sourceEntity: 'payment_entry', sourceId: walletPaymentEntry.id, direction: 'IN', amountPaise: parseMoney(walletAmountRupees, 'wallet payment amount'), currency: 'INR', occurredAt: walletPaymentEntry.created_at, actor, metadata: { mode: 'LNDRY Wallet', invoiceId: submittedInvoice.id } });
+  }
   let paymentEntry: EntityRow | undefined;
-  if (paymentMode !== 'Pay Later') {
+  if (paymentMode !== 'Pay Later' && remainderAfterWallet > 0) {
     const cashShift = paymentMode === 'Cash' ? cashShiftForTransaction(tenant, input.cashRegister) : undefined;
     paymentEntry = createRow(tenant, actor, 'payment_entry', {
       payment_type: 'Receive', party: customer.id, posting_date: orderDate, mode: paymentMode,
-      amount: quote.grandTotal, against_sales: submittedInvoice.id, reference: input.paymentReference?.trim().slice(0, 120), provider_status: 'Manual',
+      amount: remainderAfterWallet, against_sales: submittedInvoice.id, reference: input.paymentReference?.trim().slice(0, 120), provider_status: 'Manual',
       cash_shift_id: cashShift?.id, cash_register: cashShift?.data.register,
       remarks: `Laundry order payment for ${submittedInvoice.data.name}`,
     });
     submitRow(tenant, actor, 'payment_entry', paymentEntry.id);
-    store.appendFinancialDocument({ id: `doc:${paymentEntry.id}`, tenant, storeId: store.currentStore(tenant), documentType: 'payment', sourceEntity: 'payment_entry', sourceId: paymentEntry.id, amountPaise: parseMoney(quote.grandTotal, 'payment amount'), currency: 'INR', status: paymentEntry.status, occurredAt: paymentEntry.created_at, actor, metadata: { mode: paymentMode, invoiceId: submittedInvoice.id } });
-    store.appendFinancialEntry({ id: `money:${paymentEntry.id}:collection`, tenant, storeId: store.currentStore(tenant), kind: 'collection', sourceEntity: 'payment_entry', sourceId: paymentEntry.id, direction: 'IN', amountPaise: parseMoney(quote.grandTotal, 'payment amount'), currency: 'INR', occurredAt: paymentEntry.created_at, actor, metadata: { mode: paymentMode, invoiceId: submittedInvoice.id } });
+    store.appendFinancialDocument({ id: `doc:${paymentEntry.id}`, tenant, storeId: store.currentStore(tenant), documentType: 'payment', sourceEntity: 'payment_entry', sourceId: paymentEntry.id, amountPaise: parseMoney(remainderAfterWallet, 'payment amount'), currency: 'INR', status: paymentEntry.status, occurredAt: paymentEntry.created_at, actor, metadata: { mode: paymentMode, invoiceId: submittedInvoice.id } });
+    store.appendFinancialEntry({ id: `money:${paymentEntry.id}:collection`, tenant, storeId: store.currentStore(tenant), kind: 'collection', sourceEntity: 'payment_entry', sourceId: paymentEntry.id, direction: 'IN', amountPaise: parseMoney(remainderAfterWallet, 'payment amount'), currency: 'INR', occurredAt: paymentEntry.created_at, actor, metadata: { mode: paymentMode, invoiceId: submittedInvoice.id } });
   }
   const order = createRow(tenant, actor, 'laundry_order', {
     customer: customer.id,
@@ -539,9 +566,12 @@ export function bookLaundryOrder(tenant: string, actor: string, input: BookInput
     tax_amount: quote.taxAmount,
     grand_total: quote.grandTotal,
     payment_mode: paymentMode,
-    payment_status: paymentEntry ? 'Paid' : 'Unpaid',
+    payment_status: (paymentEntry || (walletPaymentEntry && remainderAfterWallet <= 0)) ? 'Paid' : 'Unpaid',
     invoice: submittedInvoice.id,
     payment_entry: paymentEntry?.id,
+    wallet_payment_entry: walletPaymentEntry?.id,
+    wallet_amount_paise: walletPaymentEntry ? Math.round(walletAmountRupees * 100) : 0,
+    wallet_redemption_request_id: walletPaymentEntry ? input.walletRedemption?.requestId : undefined,
     source: 'By Store',
     notes: input.notes?.trim(),
     photo_paths: photoPaths,
@@ -561,7 +591,8 @@ export function bookLaundryOrder(tenant: string, actor: string, input: BookInput
   const createdUnits = createPhysicalUnits(tenant, actor, order.id, customer.id, quote.items);
   const createdContainers = createLaundryContainers(tenant, actor, order.id, customer.id, quote.items, input.containerCount);
   appendCustomerLedger(tenant, actor, { customer: customer.id, entryType: 'Invoice Debit', debit: quote.grandTotal, referenceType: 'laundry_order', referenceId: order.id, reason: `Order ${order.data.name || order.id}` });
-  if (paymentEntry) appendCustomerLedger(tenant, actor, { customer: customer.id, entryType: 'Payment Credit', credit: quote.grandTotal, referenceType: 'payment_entry', referenceId: paymentEntry.id, reason: `Payment against ${submittedInvoice.data.name || submittedInvoice.id}` });
+  if (walletPaymentEntry) appendCustomerLedger(tenant, actor, { customer: customer.id, entryType: 'Wallet Debit', credit: walletAmountRupees, referenceType: 'payment_entry', referenceId: walletPaymentEntry.id, reason: `Wallet redemption against ${submittedInvoice.data.name || submittedInvoice.id}` });
+  if (paymentEntry) appendCustomerLedger(tenant, actor, { customer: customer.id, entryType: 'Payment Credit', credit: remainderAfterWallet, referenceType: 'payment_entry', referenceId: paymentEntry.id, reason: `Payment against ${submittedInvoice.data.name || submittedInvoice.id}` });
   audit(tenant, actor, 'laundry:booked', { entity: 'laundry_order', row_id: order.id, after: { state: 'Booked', invoice: submittedInvoice.id } });
   notify(tenant, { title: `New laundry order ${order.data.name || order.id}`, body: `${customer.data.name || 'Customer'} · ₹${quote.grandTotal.toFixed(2)}`, kind: 'Laundry order', severity: 'info', ref_entity: 'laundry_order', ref_id: order.id });
   publish(tenant, 'laundry.order.booked.v1', { id: order.id, invoice: submittedInvoice.id, customer: customer.id, grand_total: quote.grandTotal });
@@ -1023,6 +1054,8 @@ export function presentOrder(tenant: string, order: EntityRow) {
     grandTotal: normalizedGrandTotalPaise === undefined ? Number(order.data.grand_total || 0) : moneyNumber(normalizedGrandTotalPaise),
     paymentMode: order.data.payment_mode,
     paymentStatus: order.data.payment_status,
+    walletAmountPaise: Number(order.data.wallet_amount_paise || 0),
+    walletRedemptionRequestId: order.data.wallet_redemption_request_id || undefined,
     source: order.data.source,
     pickupRider: pickupRider ? { id: pickupRider.id, name: pickupRider.data.name, phone: pickupRider.data.phone || '' } : undefined,
     deliveryRider: deliveryRider ? { id: deliveryRider.id, name: deliveryRider.data.name, phone: deliveryRider.data.phone || '' } : undefined,
@@ -1596,6 +1629,18 @@ export function laundryDashboard(tenant: string, asOf = today()) {
       syncIssues: syncOutbox.Retry + syncOutbox.DeadLetter + syncInbox.Held + syncInbox.Failed,
       channelBreakdown: marketplaceChannelBreakdown,
     },
+    // Deliberately separate from `kpis`/`topGarments`/`topServices` above,
+    // which are counter-sales-only — these figures are pre-finalization
+    // estimates from real pulled orders (payableAmountPaise, before any
+    // reconciliation), not settled revenue, and are never blended into one
+    // total. Includes every non-terminal-cancelled order regardless of
+    // whether it has been through local intake yet.
+    online: {
+      count: marketplaceOrders.filter((order) => !MARKETPLACE_TERMINAL_EXCLUDED.includes(order.state)).length,
+      todayCount: marketplaceOrders.filter((order) => !MARKETPLACE_TERMINAL_EXCLUDED.includes(order.state) && String(order.createdAt || '').slice(0, 10) === asOf).length,
+      estimatedRevenue: round(marketplaceOrders.filter((order) => !MARKETPLACE_TERMINAL_EXCLUDED.includes(order.state)).reduce((sum, order) => sum + (Number((order.request as Record<string, unknown> | undefined)?.payableAmountPaise) || 0) / 100, 0)),
+      topGarments: marketplaceTopGarments(marketplaceOrders),
+    },
   };
 }
 
@@ -1787,7 +1832,21 @@ export function laundryStatistics(tenant: string, period: 'today' | 'week' | 'li
   const orderValue = round(orders.reduce((sum, row) => sum + orderAmount(row), 0));
   const collectionTotal = round(payments.reduce((sum, row) => sum + normalizedFinancialAmount(tenant, 'payment', row, row.data.amount), 0));
   const repeatCustomers = frequency.filter((row) => row.visits > 1).length;
-  return { period, from, to, ordersReview: { total: orders.length, breakdown: orderStates, daily: orderDaily }, revenue: { total: orderValue, averageOrderValue: orders.length ? round(orderValue / orders.length) : 0 }, collection: { total: collectionTotal, daily: collectionDaily }, customerFrequency: { total: frequency.length, repeatCustomers, breakdown: frequency }, newCustomer: { total: newCustomers.length, daily: newCustomerDaily }, serviceMix };
+  // Same split as `laundryDashboard()`'s `online` block — pre-finalization
+  // estimates from real pulled orders, never blended into the counter-only
+  // figures above — but windowed to this period's [from, to] instead of
+  // always-lifetime, matching the rest of this function's period scoping.
+  const onlineOrders = store.listMarketplaceOrderProjections(tenant).filter((order) => {
+    if (MARKETPLACE_TERMINAL_EXCLUDED.includes(order.state)) return false;
+    const createdOn = String(order.createdAt || '').slice(0, 10);
+    return createdOn >= from && createdOn <= to;
+  });
+  const online = {
+    count: onlineOrders.length,
+    estimatedRevenue: round(onlineOrders.reduce((sum, order) => sum + (Number((order.request as Record<string, unknown> | undefined)?.payableAmountPaise) || 0) / 100, 0)),
+    topGarments: marketplaceTopGarments(onlineOrders),
+  };
+  return { period, from, to, ordersReview: { total: orders.length, breakdown: orderStates, daily: orderDaily }, revenue: { total: orderValue, averageOrderValue: orders.length ? round(orderValue / orders.length) : 0 }, collection: { total: collectionTotal, daily: collectionDaily }, customerFrequency: { total: frequency.length, repeatCustomers, breakdown: frequency }, newCustomer: { total: newCustomers.length, daily: newCustomerDaily }, serviceMix, online };
 }
 
 export function laundryReportDetail(tenant: string, kind: LaundryReportKind, from?: string, to?: string, search?: string, page = 1, pageSize = 100, rowCap?: number, includeAll = false) {
@@ -1918,6 +1977,29 @@ function topItemSeries(orders: ReturnType<typeof listLaundryOrders>, key: 'garme
     point.amount = round(point.amount + (Number(item.amount) || 0));
     byName.set(name, point);
   }));
+  return [...byName.values()].sort((a, b) => b.amount - a.amount || b.quantity - a.quantity).slice(0, 6);
+}
+
+const MARKETPLACE_TERMINAL_EXCLUDED = ['Cancelled', 'Rejected', 'Expired'];
+
+// A separate top-garments tally for real online (marketplace-pulled) orders —
+// deliberately never merged with topItemSeries' local-counter figure. These
+// orders may still be pre-intake (garmentId/serviceId not yet resolved
+// against the local catalogue), so this reads straight from each order's own
+// raw request payload rather than requiring intake first.
+function marketplaceTopGarments(orders: ReturnType<typeof store.listMarketplaceOrderProjections>): RankedItem[] {
+  const byName = new Map<string, RankedItem>();
+  for (const order of orders) {
+    if (MARKETPLACE_TERMINAL_EXCLUDED.includes(order.state)) continue;
+    const items = Array.isArray((order.request as Record<string, unknown> | undefined)?.items) ? (order.request as Record<string, unknown>).items as Array<Record<string, unknown>> : [];
+    for (const item of items) {
+      const name = String(item.name || 'Unlabelled');
+      const point = byName.get(name) || { name, quantity: 0, amount: 0 };
+      point.quantity += Number(item.quantity) || 0;
+      point.amount = round(point.amount + (Number(item.total_paise) || 0) / 100);
+      byName.set(name, point);
+    }
+  }
   return [...byName.values()].sort((a, b) => b.amount - a.amount || b.quantity - a.quantity).slice(0, 6);
 }
 

@@ -116,13 +116,54 @@ export function ensureDemoOwner(tenant = 'T1', storeId = 'STORE-DEFAULT') {
   return { username, password };
 }
 
+export function issueSession(identity: AuthIdentity) {
+  const token = randomBytes(32).toString('base64url');
+  const sessionHash = hashToken(token);
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+  store.createSession({ tokenHash: sessionHash, identityId: identity.id, tenant: identity.tenant, storeId: identity.storeId, expiresAt, createdAt: new Date().toISOString() });
+  return { token, context: toContext(identity, sessionHash), expiresAt };
+}
+
 export function signIn(username: string, password: string) {
   const identity = store.findIdentityByUsername(username?.trim() || '');
   if (!identity || !identity.enabled || !passwordMatches(password, identity.passwordHash)) throw new Error('invalid username or password');
-  const token = randomBytes(32).toString('base64url');
-  const sessionHash = hashToken(token);
-  store.createSession({ tokenHash: sessionHash, identityId: identity.id, tenant: identity.tenant, storeId: identity.storeId, expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString(), createdAt: new Date().toISOString() });
-  return { token, context: toContext(identity, sessionHash), expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString() };
+  return issueSession(identity);
+}
+
+/**
+ * The production-workspace login gate: resolves (or creates) the local
+ * identity for a phone number that has *just* been verified against the
+ * real backend (see `cloud-auth.ts`). A genuinely different trust boundary
+ * from `bootstrapOwner`/`createOperationalUser` — the caller here is the
+ * real backend's own OTP verification, not an existing authenticated local
+ * actor, so no `can()` staff-management check applies. There is no password
+ * for these accounts going forward; sign-in is cloud-OTP only.
+ */
+export function resolveOrCreateCloudIdentity(input: { phone: string; shopRole: 'VENDOR_OWNER' | 'VENDOR_STAFF' }): { identity: AuthIdentity; isNewIdentity: boolean } {
+  const normalizedPhone = String(input.phone || '').replace(/\D/g, '');
+  if (!normalizedPhone) throw new Error('a phone number is required');
+  const username = `cloud:${normalizedPhone}`;
+  const existing = store.findIdentityByUsername(username);
+  if (existing) {
+    if (!existing.enabled) throw new Error('this account has been disabled by the store owner');
+    return { identity: existing, isNewIdentity: false };
+  }
+  const identity = store.transaction(() => {
+    // The very first identity on a fresh install is always the owner,
+    // regardless of shopRole — a solo VENDOR_STAFF account logging into a
+    // brand-new desktop install has nobody else to defer ownership to.
+    const isFirstEver = store.authIdentityCount() === 0;
+    const roles: OperationalRole[] = isFirstEver || input.shopRole === 'VENDOR_OWNER' ? ['owner'] : ['counter_staff'];
+    const created: AuthIdentity = {
+      id: randomUUID(), tenant: 'T1', storeId: 'STORE-DEFAULT', username,
+      passwordHash: passwordHash(randomBytes(32).toString('hex')), roles, enabled: true,
+      firstName: '', lastName: '', email: '', phone: normalizedPhone, description: 'Linked to the real LNDRY marketplace account', riderId: undefined,
+      createdAt: new Date().toISOString(),
+    };
+    store.createIdentity(created);
+    return created;
+  });
+  return { identity, isNewIdentity: true };
 }
 
 export function contextForToken(token: string | undefined) {

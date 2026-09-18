@@ -109,9 +109,14 @@ function requireString(value: unknown, field: string): string {
   return value;
 }
 
-/** POST /auth/send-otp */
-export async function sendOtp(fetchImpl: FetchLike, baseUrl: string, phone: string): Promise<void> {
-  await callCloud(fetchImpl, baseUrl, '/auth/send-otp', { method: 'POST', body: { phone } });
+/** POST /auth/send-otp. The real backend echoes the generated code back as
+ * `data.otp` whenever it's not wired to a live SMS provider (dev mode, or the
+ * `TEST_BYPASS_OTP_PHONES` bypass, which has no production guard) — surface
+ * it so the login screen can show it, same as `Lndry_vendor_app` already does. */
+export async function sendOtp(fetchImpl: FetchLike, baseUrl: string, phone: string): Promise<{ otp?: string }> {
+  const body = await callCloud(fetchImpl, baseUrl, '/auth/send-otp', { method: 'POST', body: { phone } });
+  const data = isRecord(body.data) ? body.data : body;
+  return { otp: typeof data.otp === 'string' && data.otp ? data.otp : undefined };
 }
 
 /** POST /auth/verify-otp — returns the access/refresh token pair. */
@@ -195,6 +200,29 @@ export async function getVendorProfile(fetchImpl: FetchLike, baseUrl: string, ac
     if (error instanceof CloudClientError && error.httpStatus === 404) return null;
     throw error;
   }
+}
+
+/**
+ * GET /auth/my-roles — every role linked to this phone (the account's own
+ * `role` plus every active shop-staff assignment's role, e.g.
+ * `["CUSTOMER", "VENDOR_OWNER"]`). This is the reliable way to read a
+ * shop-staff role for the desktop's primary login gate — confirmed live
+ * that `/auth/verify-otp`'s own response only embeds `shop_role`/`vendor_id`
+ * when called with a real `challenge_id` (a request shape this client
+ * deliberately does not use, matching cloud-order-actions.ts's existing
+ * phone+otp-only calls); with the plain `{phone, otp}` shape this client
+ * actually sends, the backend's own controller has a real quirk where the
+ * absent `role` field gets silently populated from the raw `otp` string
+ * (`otp || role` reusing `otp` when `role` is undefined), which prevents the
+ * single-shop auto-scope branch from ever firing and shop_role never
+ * appears. `/auth/my-roles` sidesteps this — it needs only a valid
+ * authenticated token, not shop-scoping, and it is the same primitive the
+ * real backend's own multi-shop `select-role` flow is built on.
+ */
+export async function getMyRoles(fetchImpl: FetchLike, baseUrl: string, accessToken: string): Promise<string[]> {
+  const body = await callCloud(fetchImpl, baseUrl, '/auth/my-roles', { accessToken });
+  const data = isRecord(body.data) ? body.data : body;
+  return Array.isArray(data.roles) ? data.roles.filter((role): role is string => typeof role === 'string') : [];
 }
 
 /**

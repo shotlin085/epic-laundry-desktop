@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronRight, CircleDollarSign, ImageOff, Loader2, PackagePlus, Pencil, Plus, Ruler, Shirt, SlidersHorizontal, Sparkles, Tags, X } from 'lucide-react'
+import { Check, ChevronRight, CircleDollarSign, ImageOff, Loader2, PackagePlus, Pencil, Plus, RefreshCw, Ruler, Shirt, SlidersHorizontal, Sparkles, Tags, X } from 'lucide-react'
 import { type FormEvent, type ReactNode, useMemo, useState } from 'react'
 import { garmentVisuals, lndryBrand } from '@/assets/generated/manifest'
-import { apiGet, apiPatch, apiPost } from '@/lib/api'
+import { apiGet, apiPatch, apiPost, operatorErrorMessage } from '@/lib/api'
 import type { LaundryCatalogue as Catalogue } from '@/lib/laundry'
-import { formatINR } from '@/lib/utils'
+import { cn, formatINR } from '@/lib/utils'
 import VisualEmptyState from '@/components/laundry/VisualEmptyState'
 import VisualLoadingState from '@/components/laundry/VisualLoadingState'
 
@@ -25,6 +25,17 @@ export default function LaundryCatalogue() {
   const isOwner = Boolean(session.data?.user?.roles.includes('owner'))
   const setupProgress = useQuery({ queryKey: ['setup-progress'], queryFn: () => apiGet<SetupProgress>('/settings/setup-progress'), enabled: isOwner })
   const confirmCatalogue = useMutation({ mutationFn: () => apiPost<SetupProgress>('/settings/setup-progress', { catalogue: true }), onSuccess: (progress) => { client.setQueryData(['setup-progress'], progress); setNotice('Catalogue review recorded in the owner setup audit.') }, onError: (error: Error) => setNotice(error.message || 'Could not record catalogue review.') })
+  // Pulls this vendor's real, admin-approved garment/service catalogue
+  // (categories, services, garments, prices, and each garment's own real
+  // photo where an admin uploaded one) from the LNDRY marketplace and
+  // updates this store's local master data in place — the same sync that
+  // ran automatically on first connect, re-runnable any time new items or
+  // photos are approved on the vendor side.
+  const syncCatalogue = useMutation({
+    mutationFn: () => apiPost<{ categoriesSeen: number; servicesSeen: number; garmentsSeen: number; created: number; updated: number; imagesEmbedded: number }>('/marketplace/cloud/catalogue-sync', {}),
+    onSuccess: (summary) => { client.invalidateQueries({ queryKey: ['laundry-catalogue'] }); setNotice(`Synced from LNDRY: ${summary.garmentsSeen} garments, ${summary.categoriesSeen} categories, ${summary.imagesEmbedded} real photo(s) — ${summary.created} added, ${summary.updated} updated.`) },
+    onError: (error: Error) => setNotice(operatorErrorMessage(error, 'Could not sync the real catalogue from LNDRY — check the marketplace connection.')),
+  })
   const save = useMutation({
     mutationFn: async ({ target, data }: { target: EditTarget; data: Record<string, unknown> }) => {
       const { kind, value } = target
@@ -42,7 +53,7 @@ export default function LaundryCatalogue() {
   return <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
     <header className="relative overflow-hidden rounded-[28px] bg-[#201847] p-6 text-white shadow-[0_20px_50px_rgba(51,31,118,.22)] md:p-8">
       <div className="absolute -right-16 -top-20 h-64 w-64 rounded-full border-[28px] border-white/10" /><div className="absolute bottom-0 right-16 h-28 w-28 rounded-t-full bg-[#9c8cff]/20" />
-      <div className="relative flex flex-col gap-5 md:flex-row md:items-end md:justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-[#bfb5ff]">Lndry master data</p><h1 className="mt-2 font-serif text-3xl">Catalogue command centre</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-[#ddd8ff]">Owner-controlled garments, services, rates and counter adjustments. Every booked line keeps its rate-rule provenance.</p></div>{isOwner ? <div className="flex flex-wrap gap-2"><button type="button" disabled={confirmCatalogue.isPending || setupProgress.data?.catalogue} onClick={() => confirmCatalogue.mutate()} className="inline-flex w-fit items-center gap-2 rounded-xl border border-white/25 bg-white/10 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-white/15 disabled:cursor-default disabled:opacity-70"><Check className="h-4 w-4" />{setupProgress.data?.catalogue ? 'Catalogue reviewed' : 'Mark reviewed'}</button><button type="button" onClick={() => setEditor({ kind: 'garment' })} className="inline-flex w-fit items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-[#382a7b] shadow-lg transition hover:bg-[#f1efff]"><PackagePlus className="h-4 w-4" />Add garment</button></div> : <span className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs text-[#ddd8ff]">Read-only catalogue access</span>}</div>
+      <div className="relative flex flex-col gap-5 md:flex-row md:items-end md:justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-[#bfb5ff]">Lndry master data</p><h1 className="mt-2 font-serif text-3xl">Catalogue command centre</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-[#ddd8ff]">Owner-controlled garments, services, rates and counter adjustments. Every booked line keeps its rate-rule provenance.</p></div>{isOwner ? <div className="flex flex-wrap gap-2"><button type="button" disabled={syncCatalogue.isPending} onClick={() => syncCatalogue.mutate()} title="Pull the latest approved garments, services and photos from your LNDRY marketplace account" className="inline-flex w-fit items-center gap-2 rounded-xl border border-white/25 bg-white/10 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-white/15 disabled:cursor-default disabled:opacity-70"><RefreshCw className={cn('h-4 w-4', syncCatalogue.isPending && 'animate-spin')} />{syncCatalogue.isPending ? 'Syncing…' : 'Sync from LNDRY'}</button><button type="button" disabled={confirmCatalogue.isPending || setupProgress.data?.catalogue} onClick={() => confirmCatalogue.mutate()} className="inline-flex w-fit items-center gap-2 rounded-xl border border-white/25 bg-white/10 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-white/15 disabled:cursor-default disabled:opacity-70"><Check className="h-4 w-4" />{setupProgress.data?.catalogue ? 'Catalogue reviewed' : 'Mark reviewed'}</button><button type="button" onClick={() => setEditor({ kind: 'garment' })} className="inline-flex w-fit items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-[#382a7b] shadow-lg transition hover:bg-[#f1efff]"><PackagePlus className="h-4 w-4" />Add garment</button></div> : <span className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs text-[#ddd8ff]">Read-only catalogue access</span>}</div>
     </header>
     {notice ? <p role="status" className="mt-4 rounded-xl border border-[#664cf0]/15 bg-[#f4f1ff] px-4 py-3 text-sm text-[#443694]">{notice}</p> : null}
     <section className="mt-5 grid gap-3 md:grid-cols-4"><Metric label="Categories" value={data.categories.length} note="Counter organisation" /><Metric label="Services" value={data.services.length} note="Unit-aware processing" /><Metric label="Price rules" value={data.prices.length} note="General + special rates" /><Metric label="Adjustments" value={data.chargeRules.length + data.discountRules.length + data.taxRules.length} note="Server-calculated" /></section>

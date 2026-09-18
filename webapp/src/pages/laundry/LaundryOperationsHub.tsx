@@ -14,8 +14,8 @@ const workstreams: Workstream[] = [
   { to: '/laundry/production-queue', title: 'Production queue', description: 'Work the live garment queue without losing the order it belongs to.', action: 'Open production queue', icon: Wrench },
   { to: '/laundry/garment-tracking', title: 'Garment tracking', description: 'Scan garment, bag and retired-tag identities with their physical history intact.', action: 'Track a garment', icon: ScanLine },
   { to: '/laundry/quality-claims', title: 'Quality & exceptions', description: 'Resolve QC, rewash and customer-claim decisions against the same order timeline.', action: 'Review quality work', icon: ShieldCheck },
-  { to: '/laundry/dispatch', title: 'Pickup & delivery', description: 'Assign riders and record each customer handoff from the operational order.', action: 'Open dispatch', icon: Bike },
-  { to: '/laundry/routes', title: 'Route runs', description: 'Plan and run pickup or delivery routes with capacity and rider accountability.', action: 'Open route runs', icon: Route },
+  { to: '/laundry/dispatch', title: 'Pickup & delivery', description: 'Assign captains and record each customer handoff from the operational order.', action: 'Open dispatch', icon: Bike },
+  { to: '/laundry/routes', title: 'Route runs', description: 'Plan and run pickup or delivery routes with capacity and captain accountability.', action: 'Open route runs', icon: Route },
   { to: '/laundry/print-centre', title: 'Documents & tags', description: 'Print receipts, invoices, garment tags and bag tags from canonical order data.', action: 'Open print centre', icon: Printer },
 ]
 
@@ -24,7 +24,7 @@ export default function LaundryOperationsHub() {
     <div className="max-w-3xl">
       <p className="text-[10px] font-extrabold uppercase tracking-[.18em] text-[#39786f]">Operations visual board</p>
       <h1 className="mt-2 font-display text-3xl font-extrabold tracking-[-.04em] text-[#17353c]">Counter → care floor → customer.</h1>
-      <p className="mt-3 max-w-2xl text-sm leading-6 text-[#617178]">Choose a work area by its icon. Every scan, quality decision and rider handoff stays attached to the same laundry order.</p>
+      <p className="mt-3 max-w-2xl text-sm leading-6 text-[#617178]">Choose a work area by its icon. Every scan, quality decision and captain handoff stays attached to the same laundry order.</p>
     </div>
     <div className="mt-7 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
       {workstreams.map((item, index) => <NavLink key={item.to} to={item.to} className="group relative overflow-hidden rounded-[22px] border border-[#263f44]/10 bg-[#fffdf8] p-5 shadow-[0_1px_1px_rgba(12,42,48,.03)] transition hover:-translate-y-0.5 hover:border-[#39786f]/30 hover:shadow-[0_14px_30px_rgba(81,56,207,.13)]">

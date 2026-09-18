@@ -10,7 +10,7 @@ import { cn, formatINR } from '@/lib/utils'
 
 const stateLabels: Array<{ key: keyof DashboardData['kpis']; label: string; detail: string; icon: typeof ClipboardList; tone: string }> = [
   { key: 'booking', label: 'Booking', detail: 'New orders', icon: ClipboardList, tone: 'text-sky-700 bg-sky-100' },
-  { key: 'delivery', label: 'Delivery', detail: 'Out with rider', icon: Truck, tone: 'text-orange-700 bg-orange-100' },
+  { key: 'delivery', label: 'Delivery', detail: 'Out with captain', icon: Truck, tone: 'text-orange-700 bg-orange-100' },
   { key: 'delivered', label: 'Delivered', detail: 'Completed', icon: CheckCircle2, tone: 'text-emerald-700 bg-emerald-100' },
 ]
 
@@ -47,6 +47,12 @@ export default function LaundryDashboard() {
         <Kpi icon={ClipboardList} label="Order requests" value={String(data.kpis.orderRequests)} note="Waiting for a response" accent="#8d79ff" />
         <Kpi icon={PackageCheck} label="Pending orders" value={String(data.kpis.pendingOrders)} note="Across the store" accent="#187b5c" />
         <Kpi icon={CalendarClock} label="Upcoming delivery" value={String(data.kpis.upcomingDeliveries)} note="Due today or earlier" accent="#d88a22" />
+      </section>
+
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1.4fr]" aria-label="Counter vs online split">
+        <div className="rounded-[20px] border border-[#263f44]/10 bg-white p-5 shadow-[0_8px_28px_rgba(37,48,43,.04)]"><p className="text-[10px] font-bold uppercase tracking-[.13em] text-[#718087]">Counter sales today</p><p className="mt-1 font-serif text-3xl tabular-nums text-[#17353c]">{formatINR(data.kpis.todayRevenue)}</p><p className="mt-1 text-xs text-[#74848a]">Booked at this counter</p></div>
+        <div className="rounded-[20px] border border-[#664cf0]/15 bg-[#f6f4ff] p-5 shadow-[0_8px_28px_rgba(37,48,43,.04)]"><p className="text-[10px] font-bold uppercase tracking-[.13em] text-[#5138cf]">Online orders (est.)</p><p className="mt-1 font-serif text-3xl tabular-nums text-[#3a2b8f]">{formatINR(data.online.estimatedRevenue)}</p><p className="mt-1 text-xs text-[#6b5fb0]">{data.online.count} active · {data.online.todayCount} today · pre-reconciliation estimate</p></div>
+        <RankPanel title="Top online garments" icon={Shirt} rows={data.online.topGarments} />
       </section>
 
       <section className="rounded-[22px] border border-[#263f44]/10 bg-[#f8fbf8] p-5 shadow-[0_8px_28px_rgba(37,48,43,.04)] md:p-6" aria-labelledby="marketplace-operations-heading">
@@ -91,7 +97,7 @@ export default function LaundryDashboard() {
           <div className="mt-5 space-y-2">
             {data.attention.map((item) => <div key={item.id} className="flex items-center gap-3 rounded-2xl border border-[#263f44]/8 bg-white px-3 py-3.5"><span className={cn('h-2.5 w-2.5 rounded-full', item.tone === 'amber' ? 'bg-amber-400' : item.tone === 'rose' ? 'bg-rose-400' : item.tone === 'blue' ? 'bg-sky-400' : 'bg-slate-400')} /><span className="flex-1 text-sm font-medium">{item.label}</span><span className="grid h-7 min-w-7 place-items-center rounded-lg bg-[#eff2ee] px-1.5 text-sm font-bold tabular-nums">{item.count}</span></div>)}
           </div>
-          <div className="mt-6 rounded-2xl bg-[#eaf3ef] p-4 text-sm text-[#315d57]"><CircleAlert className="mr-2 inline h-4 w-4" /><span className="font-semibold">Tip:</span> Move ready orders to delivery before the next rider dispatch.</div>
+          <div className="mt-6 rounded-2xl bg-[#eaf3ef] p-4 text-sm text-[#315d57]"><CircleAlert className="mr-2 inline h-4 w-4" /><span className="font-semibold">Tip:</span> Move ready orders to delivery before the next captain dispatch.</div>
         </div>
       </section>
 

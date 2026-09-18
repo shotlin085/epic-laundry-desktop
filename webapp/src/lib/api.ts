@@ -55,6 +55,9 @@ const operatorMessages: Record<string, string> = {
   ORDER_NOT_FOUND: 'This order is no longer available in the active store.',
   PRINT_JOB_INVALID: 'The print request is invalid. Check the selected document, tags, and copy count.',
   PRINT_JOB_FAILED: 'The print job failed. Record the failure reason and retry from Print Centre.',
+  RIDER_ONLY_ACCOUNT: 'This phone is registered as a Captain (delivery) account. Captains cannot access the store desktop app.',
+  AMBIGUOUS_VENDOR_ACCOUNT: 'This phone is not recognized as a vendor account for any shop. Contact support if you believe this is wrong.',
+  CLOUD_LOGIN_INPUT_REQUIRED: 'Enter your phone number and the one-time code.',
 };
 
 export function operatorErrorMessage(error: unknown, fallback: string) {

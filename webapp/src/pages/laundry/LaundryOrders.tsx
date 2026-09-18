@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock3,
+  Cloud,
   CircleDollarSign,
   Download,
   Eye,
@@ -55,6 +56,7 @@ const states: Array<LaundryState | "all"> = [
 
 type OrderPage = { items: LaundryOrder[]; total: number; page: number; pageSize: number; totalPages: number };
 type CustomerRecord = { id: string; name: string; phone: string; email: string; address: string; preferredContact?: string; marketingConsent?: boolean };
+type OnlineOnlyCustomer = { name: string; phone: string; orderCount: number; lastOrderAt: string };
 type CustomerInsight = {
   asOf: string;
   summary: { totalCustomers: number; revenue: number };
@@ -127,6 +129,12 @@ function StoreOrdersCustomersWorkspace() {
   const customerInsights = useQuery({
     queryKey: ["customer-insights"],
     queryFn: () => apiGet<CustomerInsight>("/laundry/customer-insights"),
+    enabled: view === "customers",
+    staleTime: 30_000,
+  });
+  const onlineOnlyCustomers = useQuery({
+    queryKey: ["laundry-customers-online-only"],
+    queryFn: () => apiGet<OnlineOnlyCustomer[]>("/laundry/customers/online-only"),
     enabled: view === "customers",
     staleTime: 30_000,
   });
@@ -289,6 +297,23 @@ function StoreOrdersCustomersWorkspace() {
         </section>
       </> : <>
         <CustomerPulse data={customerInsights.data} loading={customerInsights.isLoading} activeToday={activeToday} restricted={restrictedCustomers} />
+        {onlineOnlyCustomers.data?.length ? (
+          <section className="mt-5 rounded-[20px] border border-[#664cf0]/15 bg-[#f6f4ff] p-5">
+            <div className="flex items-center gap-2">
+              <Cloud className="h-4 w-4 text-[#5138cf]" />
+              <p className="text-sm font-bold text-[#3a2b8f]">Online-only customers ({onlineOnlyCustomers.data.length})</p>
+            </div>
+            <p className="mt-1 text-xs text-[#6b5fb0]">Ordered through the app, not yet in your local customer list — they'll appear above automatically once their first order is finalised.</p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {onlineOnlyCustomers.data.slice(0, 12).map((customer) => (
+                <div key={customer.phone} className="rounded-xl border border-[#664cf0]/10 bg-white px-3 py-2.5">
+                  <p className="truncate text-sm font-semibold text-[#332b50]">{customer.name}</p>
+                  <p className="text-xs text-[#718087]">{customer.phone} · {customer.orderCount} order{customer.orderCount === 1 ? "" : "s"}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
         <section className="mt-6 overflow-hidden rounded-[22px] border border-[#263f44]/10 bg-white shadow-[0_8px_28px_rgba(37,48,43,.04)]">
           <div className="grid gap-3 border-b border-[#263f44]/10 p-4 lg:grid-cols-[minmax(0,1fr)_180px_180px_150px]">
             <div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#7e8d90]" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, phone or email" className="h-10 w-full rounded-xl border border-[#263f44]/15 bg-[#fbfbf9] pl-9 pr-3 text-sm outline-none focus:border-brand-500" /></div>
@@ -674,7 +699,7 @@ function OrderRow({
               to="/laundry/dispatch"
               className="inline-flex items-center gap-1 rounded-lg bg-[#e7f3ed] px-2.5 py-1.5 text-xs font-bold text-[#2b6c62]"
             >
-              Assign rider
+              Assign captain
               <Truck className="h-3.5 w-3.5" />
             </Link>
           ) : (
@@ -938,7 +963,7 @@ function OrderDetail({
     return (
       <aside className="rounded-[22px] border border-dashed border-[#99afa8] bg-[#fbfcf8] p-6 text-center text-sm text-[#718087]">
         <Tag className="mx-auto mb-3 h-5 w-5 text-[#55938a]" />
-        Select an order to review its garments, payment, rider, and audit trail.
+        Select an order to review its garments, payment, captain, and audit trail.
       </aside>
     );
   if (loading || !order)
@@ -1111,7 +1136,7 @@ function OrderDetail({
         <Truck className="mr-1.5 inline h-4 w-4" />
         {rider
           ? `${rider.name}${rider.phone ? ` · ${rider.phone}` : ""}`
-          : "No rider assigned"}{" "}
+          : "No captain assigned"}{" "}
         · {order.fulfillmentMode}
       </div>
       <section className="mt-4 rounded-xl border border-[#263f44]/10 bg-white p-3">
@@ -1451,7 +1476,7 @@ async function exportOrders(rows: LaundryOrder[]) {
       "Payment status": order.paymentStatus,
       Status: order.state,
       "Fulfilment mode": order.fulfillmentMode,
-      Rider: order.deliveryRider?.name || order.pickupRider?.name || "",
+      Captain: order.deliveryRider?.name || order.pickupRider?.name || "",
     })),
   );
   sheet["!cols"] = [16, 16, 24, 16, 14, 16, 14, 16, 16, 18, 18, 22].map(

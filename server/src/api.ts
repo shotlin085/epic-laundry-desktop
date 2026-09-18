@@ -36,6 +36,7 @@ import { getRate, convert } from './modules/multi-entity/fx.js';
 import { roleCan } from './modules/rbac/roles.js';
 import { paymentLink } from './modules/integrations/payments.js';
 import { bootstrapOwner, can, changePassword, contextForToken, createOperationalStore, createOperationalUser, listOperationalStores, readSessionToken, resetOperationalUserPassword, setOperationalUserEnabled, signIn, signOut, switchOperationalStore, updateOperationalUser, type AuthContext } from './modules/auth/auth.js';
+import { authenticateWithCloud, requestLoginOtp, isFreshInstall, CloudLoginError } from './modules/auth/cloud-auth.js';
 import { runBot, fetchBankStatement } from './modules/integrations/rpa.js';
 import {
   scoreLead, scoreAllLeads, logActivity, activitiesFor, findDuplicateLeads, mergeLeads,
@@ -52,7 +53,7 @@ import {
   laundryDispatch, laundryReportDetail, laundryReports, laundryStatistics, listLaundryExpenses, listLaundryImportJobs, listLaundryOrderPage, listLaundryOrders, listLaundryRiderSettlements, listLaundryRiders, quoteLaundryOrder, saveLaundryCategory, saveLaundryChargeRule, saveLaundryDiscountRule,
   saveLaundryGarment, saveLaundryPrice, saveLaundryRiderSettlement, saveLaundryService, saveLaundryTaxRule, searchLaundryCustomers, seedLaundryDefaults, transitionLaundryOrder,
 } from './modules/laundry/domain.js';
-import { adjustRewards, applyWalletCommand, archiveLaundryCustomerAddress, createLaundryCustomer, customerProfile, customerRetentionInsights, listLaundryCustomerAddresses, saveLaundryCustomerAddress, updateLaundryCustomer } from './modules/laundry/customers.js';
+import { adjustRewards, applyWalletCommand, archiveLaundryCustomerAddress, createLaundryCustomer, customerProfile, customerRetentionInsights, listLaundryCustomerAddresses, listOnlineOnlyCustomers, saveLaundryCustomerAddress, updateLaundryCustomer } from './modules/laundry/customers.js';
 import { collectServicePackagePayment, createServicePackage, customerPackages, listServicePackages, packageLiability, purchaseServicePackage, redeemServicePackage } from './modules/laundry/packages.js';
 import { collectLaundryPayment, laundryPaymentSummary, reverseLaundryPayment } from './modules/laundry/payments.js';
 import { laundryBusinessDate } from './modules/laundry/dates.js';
@@ -99,6 +100,11 @@ import { pullCloudOrders } from './modules/marketplace/cloud-order-sync.js';
 import { acceptCloudOrder, CloudOrderConflictError, rejectCloudOrder } from './modules/marketplace/cloud-order-actions.js';
 import { advanceCloudOrderStage, CLOUD_ORDER_STAGES, cloudProgressErrorHint, proposeCloudReconciliation, syncCloudOrderDetail, type CloudOrderStage } from './modules/marketplace/cloud-order-progress.js';
 import { fetchCloudCatalogue, updateCloudCatalogueItem, updateCloudCatalogueStock } from './modules/marketplace/cloud-catalogue.js';
+import { syncLocalCatalogueFromCloud } from './modules/marketplace/catalogue-sync.js';
+import { pushStoreOrderIfLinked, resolveCloudCustomerByPhone, adoptRemoteCustomer } from './modules/marketplace/cloud-store-orders.js';
+import { lookupCloudWalletBalance, createCloudWalletRedemptionRequest, confirmCloudWalletRedemption, cancelCloudWalletRedemption } from './modules/marketplace/cloud-wallet.js';
+import { fetchCloudVendorCategories, fetchCloudVendorServices, fetchCloudVendorServiceDetails, createCloudServiceDraft, bulkUpsertCloudGarmentRates } from './modules/marketplace/cloud-vendor-services.js';
+import { syncLocalCaptainsFromCloud } from './modules/marketplace/cloud-captains.js';
 import { claimConnectedPlatformPartnerLead, connectPlatformSession, disconnectPlatformSession, getPlatformSessionStatus, callConnectedPlatformApi, getConnectedPlatformOrder, getConnectedPlatformVendor, listConnectedPlatformAuditLogs, listConnectedPlatformFinanceVendors, listConnectedPlatformOrders, listConnectedPlatformPartnerLeads, listConnectedPlatformVendorFinancials, listConnectedPlatformVendorTransactions, listConnectedPlatformVendors, reviewConnectedPlatformVendor, writeConnectedPlatformApi } from './modules/marketplace/platform-session.js';
 import { renderCanonicalTaxInvoice } from './modules/gst/canonical-invoice-print.js';
 import { approveTaxPolicyRule, createTaxPolicyRule, listTaxPolicyRules, retireTaxPolicyRule, saveSupplierTaxProfile, supplierTaxProfile, taxReadiness } from './modules/gst/tax-policy.js';
@@ -579,6 +585,17 @@ export function registerApi(app: FastifyInstance) {
     return result;
   };
   const inStore = <T>(req: any, work: () => T) => store.withStoreScope(req.auth!.tenant, req.auth!.storeId, work);
+  // Fire-and-forget: a completed walk-in sale is pushed to the cloud as a
+  // "Laundry Store" order if the customer's phone matches a real account —
+  // never blocks or fails the local booking. Separate store-scope wrap since
+  // this runs after the request's own inStore(...) call has already returned.
+  const pushBookedStoreOrder = (req: any, result: any) => {
+    if (!result?.order) return;
+    const tenant = req.auth!.tenant, actor = req.auth!.actor, storeId = req.auth!.storeId;
+    store.withStoreScope(tenant, storeId, () => {
+      void pushStoreOrderIfLinked(tenant, actor, result.order).catch(() => {});
+    });
+  };
   const laundryFailure = (rep: any, error: unknown) => {
     if (error instanceof TagRetiredError) return rep.code(409).send({ code: error.code, error: error.message, details: error.details });
     if (error instanceof LaundryDomainError) return rep.code(error.code === 'TAG_RETIRED' ? 409 : 400).send({ code: error.code, error: error.message, details: error.details });
@@ -665,6 +682,39 @@ export function registerApi(app: FastifyInstance) {
       rep.header('Set-Cookie', sessionCookie(signedIn.token, 60 * 60 * 12));
       return { user: { username: signedIn.context.actor, roles: signedIn.context.roles, tenant: signedIn.context.tenant, storeId: signedIn.context.storeId }, expiresAt: signedIn.expiresAt };
     } catch (error: any) { return rep.code(401).send({ error: error.message }); }
+  });
+  // Production-workspace login gate — the one way into this app for a real
+  // vendor: phone+OTP against the real backend, replacing local username/
+  // password. Deliberately UNAUTHENTICATED (no `guard`): there is no local
+  // session yet at this point, by definition. The demo workspace keeps its
+  // own separate bootstrap/sign-in above, untouched.
+  app.post('/api/auth/cloud/otp', async (req: any, rep: any) => {
+    try { return await requestLoginOtp(String((req.body as any)?.phone || '')); }
+    catch (error: any) { return rep.code(error instanceof CloudLoginError ? 400 : cloudErrorStatus(error)).send(error instanceof CloudLoginError ? { code: error.code, error: error.message } : cloudErrorBody(error)); }
+  });
+  app.post('/api/auth/cloud/verify', async (req: any, rep: any) => {
+    try {
+      const freshInstall = isFreshInstall();
+      const result = await authenticateWithCloud({ phone: String((req.body as any)?.phone || ''), otp: String((req.body as any)?.otp || '') });
+      if (freshInstall || result.isNewIdentity) {
+        // Real approved catalogue in, generic starter catalogue never seeded
+        // for a cloud-authenticated identity — matches production's actual
+        // vendor data from the first moment, not a placeholder set the owner
+        // would otherwise have to clear out by hand.
+        store.withStoreScope(result.context.tenant, result.context.storeId, () => {
+          void syncLocalCatalogueFromCloud(result.context.tenant, result.context.actor).catch(() => {
+            // Best-effort: a slow/unreachable first sync must never block login
+            // itself. The Marketplace catalogue page's own manual "Sync" button
+            // covers a retry.
+          });
+        });
+      }
+      rep.header('Set-Cookie', sessionCookie(result.token, 60 * 60 * 12));
+      return { user: { username: result.context.actor, roles: result.context.roles, tenant: result.context.tenant, storeId: result.context.storeId }, expiresAt: result.expiresAt };
+    } catch (error: any) {
+      if (error instanceof CloudLoginError) return rep.code(403).send({ code: error.code, error: error.message });
+      return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error));
+    }
   });
   app.post('/api/auth/sign-out', { preHandler: guard }, async (req: any, rep: any) => {
     signOut(readSessionToken(req.headers));
@@ -846,8 +896,62 @@ export function registerApi(app: FastifyInstance) {
   app.get('/api/laundry/customers', { preHandler: [guard, allow('customers.read')] }, async (req: any) =>
     inStore(req, () => searchLaundryCustomers(req.auth!.tenant, String((req.query as any)?.search || ''))),
   );
+  // A local-only search (above) can never find a real LNDRY App customer
+  // who has never bought here before — the app and the POS are separate
+  // databases. This asks the real backend directly whether a phone number
+  // belongs to a real account, for the booking screen to offer as a
+  // one-click "adopt" suggestion when nothing local matches. Best-effort:
+  // not connected / a transient network issue is a normal "no match", not
+  // a 500 — a vendor typing a phone shouldn't see an error for this.
+  app.get('/api/laundry/customers/remote-lookup', { preHandler: [guard, allow('customers.read')] }, async (req: any) => {
+    const phone = String((req.query as any)?.phone || '').replace(/\D/g, '');
+    if (phone.length < 8) return { match: null };
+    try {
+      const resolved = await resolveCloudCustomerByPhone(req.auth!.tenant, phone);
+      return { match: resolved?.userId ? { userId: resolved.userId, name: resolved.name, phone } : null };
+    } catch {
+      return { match: null };
+    }
+  });
+  app.post('/api/laundry/customers/adopt-remote', { preHandler: [guard, allow('customers.create')] }, async (req: any, rep: any) => {
+    const { userId, name, phone } = (req.body as any) || {};
+    if (!userId || !phone) return rep.code(400).send({ error: 'userId and phone are required' });
+    try { return rep.code(201).send(inStore(req, () => adoptRemoteCustomer(req.auth!.tenant, req.auth!.actor, { userId, name, phone }))); }
+    catch (error: any) { return rep.code(400).send({ error: error.message || 'could not link this real customer' }); }
+  });
+
+  // ── Wallet redemption at the counter ────────────────────────────────────
+  // A vendor looks a customer up by phone, proposes redeeming part of their
+  // real LNDRY wallet balance against a counter sale, and the customer
+  // confirms with a one-time code read off their own already-logged-in
+  // app. All real business logic (rate limiting, audit logging, the
+  // atomic claim+debit) lives on Lndry_backend — these are thin proxies.
+  app.post('/api/marketplace/cloud/wallet/lookup', { preHandler: [guard, allow('orders.create')] }, async (req: any, rep: any) => {
+    const phone = String((req.body as any)?.phone || '');
+    try { return await lookupCloudWalletBalance(req.auth!.tenant, phone); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/marketplace/cloud/wallet/redemption-requests', { preHandler: [guard, allow('orders.create')] }, async (req: any, rep: any) => {
+    const { customerUserId, amountPaise } = (req.body as any) || {};
+    if (!customerUserId || !Number.isFinite(amountPaise) || amountPaise <= 0) return rep.code(400).send({ error: 'customerUserId and a positive amountPaise are required' });
+    try { return await createCloudWalletRedemptionRequest(req.auth!.tenant, customerUserId, amountPaise); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/marketplace/cloud/wallet/redemption-requests/:id/confirm', { preHandler: [guard, allow('orders.create')] }, async (req: any, rep: any) => {
+    const otp = String((req.body as any)?.otp || '');
+    if (!otp) return rep.code(400).send({ error: 'otp is required' });
+    try { return await confirmCloudWalletRedemption(req.auth!.tenant, String((req.params as any).id), otp); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/marketplace/cloud/wallet/redemption-requests/:id/cancel', { preHandler: [guard, allow('orders.create')] }, async (req: any, rep: any) => {
+    try { await cancelCloudWalletRedemption(req.auth!.tenant, String((req.params as any).id)); return { cancelled: true }; }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
   app.get('/api/laundry/customer-insights', { preHandler: [guard, allow('customers.read')] }, async (req: any) =>
     inStore(req, () => customerRetentionInsights(req.auth!.tenant)),
+  );
+  app.get('/api/laundry/customers/online-only', { preHandler: [guard, allow('customers.read')] }, async (req: any) =>
+    inStore(req, () => listOnlineOnlyCustomers(req.auth!.tenant)),
   );
   app.post('/api/laundry/customers', { preHandler: [guard, allow('customers.create')] }, async (req: any, rep: any) => {
     try { return rep.code(201).send(inStore(req, () => idempotent(req, 'laundry.customer-create', () => createLaundryCustomer(req.auth!.tenant, req.auth!.actor, req.body as any)))); }
@@ -1024,6 +1128,46 @@ export function registerApi(app: FastifyInstance) {
   });
   app.patch('/api/marketplace/cloud/catalogue/:itemId/stock', { schema: { params: marketplaceCatalogueItemParams, body: marketplaceCloudCatalogueStockBody }, preHandler: [guard, allow('catalogue.manage')] }, async (req: any, rep: any) => {
     try { return await updateCloudCatalogueStock(req.auth!.tenant, req.params.itemId, (req.body as any).stockQuantity); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  // Real approved catalogue sync (service_categories/vendor_services — the
+  // modern model, distinct from the legacy shop-garment_rates surface
+  // above) — pulls this vendor's actual admin-approved services/garments/
+  // prices/category-photos into the local POS's own master data.
+  app.post('/api/marketplace/cloud/catalogue-sync', { preHandler: [guard, allow('catalogue.manage')] }, async (req: any, rep: any) => {
+    try { return await syncLocalCatalogueFromCloud(req.auth!.tenant, req.auth!.actor); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  // Request-a-new-service — the same PENDING -> admin approve/reject
+  // lifecycle a vendor application itself goes through on the real backend
+  // (service_categories/vendor_services, the modern model — see
+  // cloud-vendor-services.ts's header for how this differs from the legacy
+  // shop-garment_rates surface above).
+  app.get('/api/marketplace/cloud/service-categories', { preHandler: [guard, allow('catalogue.read')] }, async (req: any, rep: any) => {
+    try { return await fetchCloudVendorCategories(req.auth!.tenant); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.get('/api/marketplace/cloud/my-services', { preHandler: [guard, allow('catalogue.read')] }, async (req: any, rep: any) => {
+    try { return await fetchCloudVendorServices(req.auth!.tenant); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.get('/api/marketplace/cloud/services/:serviceId', { preHandler: [guard, allow('catalogue.read')] }, async (req: any, rep: any) => {
+    try { return await fetchCloudVendorServiceDetails(req.auth!.tenant, req.params.serviceId); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/marketplace/cloud/services', { preHandler: [guard, allow('catalogue.manage')] }, async (req: any, rep: any) => {
+    try { return await createCloudServiceDraft(req.auth!.tenant, req.body as any); }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  app.post('/api/marketplace/cloud/services/:serviceId/garment-rates/bulk', { preHandler: [guard, allow('catalogue.manage')] }, async (req: any, rep: any) => {
+    try { await bulkUpsertCloudGarmentRates(req.auth!.tenant, req.params.serviceId, (req.body as any).rates); return { success: true }; }
+    catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
+  });
+  // Real captain (rider) roster sync — identity only (name/phone), never
+  // settlement/payout: no real backend data source exists for per-rider
+  // handover/cash-collected figures (see cloud-captains.ts's header).
+  app.post('/api/marketplace/cloud/captains-sync', { preHandler: [guard, allow('settings.manage')] }, async (req: any, rep: any) => {
+    try { return await syncLocalCaptainsFromCloud(req.auth!.tenant, req.auth!.actor); }
     catch (error: any) { return rep.code(cloudErrorStatus(error)).send(cloudErrorBody(error)); }
   });
   // Platform Control — a real platform-admin identity (email+password
@@ -1251,7 +1395,11 @@ export function registerApi(app: FastifyInstance) {
     } catch (error: any) { return rep.code(400).send({ error: error.message }); }
   });
   app.post('/api/laundry/orders', { preHandler: [guard, allow('orders.create')] }, async (req: any, rep: any) => {
-    try { return rep.code(201).send(inStore(req, () => idempotent(req, 'laundry.booking', () => bookLaundryOrder(req.auth!.tenant, req.auth!.actor, req.body as any)))); }
+    try {
+      const result = inStore(req, () => idempotent(req, 'laundry.booking', () => bookLaundryOrder(req.auth!.tenant, req.auth!.actor, req.body as any)));
+      pushBookedStoreOrder(req, result);
+      return rep.code(201).send(result);
+    }
     catch (error: any) { return rep.code(400).send({ error: error.message }); }
   });
   app.get('/api/laundry/order-holds', { preHandler: [guard, allow('orders.hold')] }, async (req: any) => inStore(req, () => listLaundryOrderHolds(req.auth!.tenant, req.auth!.actor, String(req.query?.includeClosed || '') === 'true')));
@@ -2164,6 +2312,7 @@ export function registerApi(app: FastifyInstance) {
           if (!customer.is_customer && customer.is_customer !== undefined) throw new Error('offline party sync only accepts customer records');
           return createLaundryCustomer(auth.tenant, auth.actor, customer);
         }));
+        if (entity === 'laundry_order') pushBookedStoreOrder(req, result);
         const id = result?.order?.id || result?.id || result?.expense?.id;
         audit(auth.tenant, auth.actor, 'ops:offline-replay-applied', { after: { entity, id: id || null, keyHash: createHash('sha256').update(key).digest('hex') } });
         results.push({ index: i, ok: true, id, entity });

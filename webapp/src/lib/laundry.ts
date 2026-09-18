@@ -189,6 +189,16 @@ export type LaundryDashboard = {
     syncIssues: number;
     channelBreakdown: Record<string, number>;
   };
+  // Real online (marketplace-pulled) order figures — deliberately separate
+  // from `kpis`/`topGarments`/`topServices` above, which are counter-sales
+  // only. `estimatedRevenue` is pre-finalization (not yet reconciled), so
+  // it's never blended into one combined total.
+  online: {
+    count: number;
+    todayCount: number;
+    estimatedRevenue: number;
+    topGarments: Array<{ name: string; quantity: number; amount: number }>;
+  };
 };
 
 export type LaundryQuote = {

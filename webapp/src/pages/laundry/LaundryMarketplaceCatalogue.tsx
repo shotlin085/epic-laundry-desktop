@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Boxes, Check, CircleOff, Cloud, IndianRupee, Package, RefreshCw, Tag } from 'lucide-react'
+import { AlertTriangle, Boxes, Check, CheckCircle2, CircleOff, Clock3, Cloud, IndianRupee, Package, Plus, RefreshCw, Send, Tag, XCircle } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ApiError, apiGet, apiPatch, operatorErrorMessage } from '@/lib/api'
+import { apiGet, apiPatch, apiPost, operatorErrorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { canUseUi } from '@/components/laundry/LaundryShell'
 import VisualEmptyState from '@/components/laundry/VisualEmptyState'
@@ -95,7 +95,129 @@ export default function LaundryMarketplaceCatalogue() {
         />}
       </aside>
     </div>
+
+    {cloudReady ? <ServiceRequestSection canEdit={canEdit} /> : null}
   </div>
+}
+
+// ─── Request a new garment/service ─────────────────────────────────────
+// A brand-new service goes through the same PENDING → admin approve/reject
+// lifecycle a vendor application itself goes through (service_categories/
+// vendor_services — the modern model; see cloud-vendor-services.ts's header
+// for why this is a different real backend surface than the legacy
+// shop-garment_rates catalogue above). Creating a service auto-seeds a
+// zero-rate row for every garment type in that category on the real
+// backend, so step 2 is filling in real prices for garments that already
+// exist — never inventing a brand-new garment type from a text field.
+
+type CloudCategory = { id: string; name: string; description: string; imageUrl?: string }
+type CloudService = { id: string; name: string; description: string; categoryId: string; categoryName?: string; pricePerPiecePaise: number; isAvailable: boolean; approvalStatus: string; rejectionReason?: string }
+type CloudServiceGarmentRate = { garmentTypeId: string; garmentName: string; unit: string; ratePaise: number; isAvailable: boolean }
+type CloudServiceDetails = { categoryName: string; service: CloudService; garments: CloudServiceGarmentRate[] }
+
+function statusBadge(status: string) {
+  const normalized = (status || 'PENDING').toUpperCase()
+  if (normalized === 'APPROVED') return <span className="inline-flex items-center gap-1 rounded-full bg-[#e7f4ef] px-2 py-1 text-[10px] font-bold text-[#2e6a60]"><CheckCircle2 className="h-3 w-3" />Approved</span>
+  if (normalized === 'REJECTED') return <span className="inline-flex items-center gap-1 rounded-full bg-[#fde9e6] px-2 py-1 text-[10px] font-bold text-[#a44036]"><XCircle className="h-3 w-3" />Rejected</span>
+  return <span className="inline-flex items-center gap-1 rounded-full bg-[#fff2d7] px-2 py-1 text-[10px] font-bold text-[#8b5c1b]"><Clock3 className="h-3 w-3" />Awaiting LNDRY approval</span>
+}
+
+function ServiceRequestSection({ canEdit }: { canEdit: boolean }) {
+  const client = useQueryClient()
+  const [showForm, setShowForm] = useState(false)
+  const [categoryId, setCategoryId] = useState('')
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [price, setPrice] = useState('')
+  const [draftServiceId, setDraftServiceId] = useState<string | undefined>(undefined)
+  const [rates, setRates] = useState<Record<string, string>>({})
+
+  const categories = useQuery({ queryKey: ['marketplace-cloud-service-categories'], queryFn: () => apiGet<CloudCategory[]>('/marketplace/cloud/service-categories') })
+  const myServices = useQuery({ queryKey: ['marketplace-cloud-my-services'], queryFn: () => apiGet<CloudService[]>('/marketplace/cloud/my-services') })
+  const draft = useQuery({
+    queryKey: ['marketplace-cloud-service-details', draftServiceId],
+    queryFn: () => apiGet<CloudServiceDetails>(`/marketplace/cloud/services/${encodeURIComponent(draftServiceId!)}`),
+    enabled: Boolean(draftServiceId),
+  })
+
+  useEffect(() => {
+    if (draft.data) {
+      const next: Record<string, string> = {}
+      for (const garment of draft.data.garments) next[garment.garmentTypeId] = garment.ratePaise ? String(garment.ratePaise / 100) : ''
+      setRates(next)
+    }
+  }, [draft.data])
+
+  const createDraft = useMutation({
+    mutationFn: () => apiPost<CloudService>('/marketplace/cloud/services', {
+      categoryId, name: name.trim(), description: description.trim(),
+      pricePerPiecePaise: Math.round((Number(price) || 0) * 100),
+    }),
+    onSuccess: (created) => { setDraftServiceId(created.id); void client.invalidateQueries({ queryKey: ['marketplace-cloud-my-services'] }) },
+  })
+
+  const saveRates = useMutation({
+    mutationFn: () => apiPost(`/marketplace/cloud/services/${encodeURIComponent(draftServiceId!)}/garment-rates/bulk`, {
+      rates: Object.entries(rates).filter(([, value]) => value.trim() !== '').map(([garmentTypeId, value]) => ({ garmentTypeId, ratePaise: Math.round(Number(value) * 100) })),
+    }),
+    onSuccess: () => {
+      setShowForm(false); setDraftServiceId(undefined); setCategoryId(''); setName(''); setDescription(''); setPrice(''); setRates({})
+      void client.invalidateQueries({ queryKey: ['marketplace-cloud-my-services'] })
+    },
+  })
+
+  const services = myServices.data || []
+
+  return <section className="mt-6 overflow-hidden rounded-[22px] border border-[#263f44]/10 bg-white shadow-[0_10px_30px_rgba(37,48,43,.035)]" aria-label="Request a new garment or service">
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#263f44]/8 px-5 py-4">
+      <div><p className="text-[10px] font-bold uppercase tracking-[.16em] text-[#718087]">New service · admin-reviewed, same as your vendor approval</p><h2 className="mt-0.5 font-serif text-xl text-[#27454c]">Request a new garment or service</h2></div>
+      {canEdit && !showForm ? <button type="button" onClick={() => setShowForm(true)} className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#264a44] px-3.5 text-xs font-bold text-white"><Plus className="h-3.5 w-3.5" />New request</button> : null}
+    </div>
+
+    {showForm ? <div className="border-b border-[#263f44]/8 bg-[#fbfcf9] p-5">
+      {!draftServiceId ? <form onSubmit={(event) => { event.preventDefault(); createDraft.mutate() }} className="grid gap-3 sm:grid-cols-2">
+        <label className="block sm:col-span-2"><span className="mb-1 block text-[10px] font-bold uppercase tracking-[.1em] text-[#718087]">Category</span>
+          <select required value={categoryId} onChange={(event) => setCategoryId(event.target.value)} className="w-full rounded-xl border border-[#263f44]/15 bg-white px-3 py-2.5 text-sm">
+            <option value="" disabled>Choose a category…</option>
+            {(categories.data || []).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+          </select>
+        </label>
+        <label className="block sm:col-span-2"><span className="mb-1 block text-[10px] font-bold uppercase tracking-[.1em] text-[#718087]">Service name</span>
+          <input required value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Premium Silk Care" className="w-full rounded-xl border border-[#263f44]/15 bg-white px-3 py-2.5 text-sm" />
+        </label>
+        <label className="block sm:col-span-2"><span className="mb-1 block text-[10px] font-bold uppercase tracking-[.1em] text-[#718087]">Description</span>
+          <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What makes this service different" className="w-full rounded-xl border border-[#263f44]/15 bg-white px-3 py-2.5 text-sm" />
+        </label>
+        <label className="block"><span className="mb-1 block text-[10px] font-bold uppercase tracking-[.1em] text-[#718087]">Starting price (₹)</span>
+          <input required type="number" min="0" step="1" value={price} onChange={(event) => setPrice(event.target.value)} className="w-full rounded-xl border border-[#263f44]/15 bg-white px-3 py-2.5 text-sm" />
+        </label>
+        {createDraft.isError ? <p role="alert" className="sm:col-span-2 rounded-xl bg-[#fde9e6] px-3 py-2 text-xs text-[#a44036]">{operatorErrorMessage(createDraft.error, 'Could not create the request. Try again.')}</p> : null}
+        <div className="flex gap-2 sm:col-span-2">
+          <button type="submit" disabled={createDraft.isPending} className="inline-flex items-center gap-2 rounded-xl bg-[#264a44] px-4 py-2.5 text-xs font-bold text-white disabled:opacity-60"><Send className="h-3.5 w-3.5" />{createDraft.isPending ? 'Creating…' : 'Continue to pricing'}</button>
+          <button type="button" onClick={() => setShowForm(false)} className="rounded-xl border border-[#263f44]/15 px-4 py-2.5 text-xs font-bold text-[#4f485e]">Cancel</button>
+        </div>
+      </form> : <div>
+        <p className="text-sm text-[#53676a]">Set your real price for each garment under <strong>{draft.data?.categoryName || 'this category'}</strong>. Garments left blank stay at ₹0 until you fill them in later from here.</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {(draft.data?.garments || []).map((garment) => <label key={garment.garmentTypeId} className="flex items-center justify-between gap-3 rounded-xl border border-[#263f44]/10 bg-white px-3 py-2"><span className="text-xs font-semibold text-[#332b50]">{garment.garmentName} <span className="text-[#9aa3a2]">· {garment.unit}</span></span><span className="flex items-center gap-1 text-xs"><span className="text-[#718087]">₹</span><input type="number" min="0" step="1" value={rates[garment.garmentTypeId] || ''} onChange={(event) => setRates({ ...rates, [garment.garmentTypeId]: event.target.value })} className="w-20 rounded-lg border border-[#263f44]/15 px-2 py-1 text-right" /></span></label>)}
+        </div>
+        {saveRates.isError ? <p role="alert" className="mt-3 rounded-xl bg-[#fde9e6] px-3 py-2 text-xs text-[#a44036]">{operatorErrorMessage(saveRates.error, 'Could not save prices. Try again.')}</p> : null}
+        <div className="mt-3 flex gap-2">
+          <button type="button" disabled={saveRates.isPending} onClick={() => saveRates.mutate()} className="inline-flex items-center gap-2 rounded-xl bg-[#264a44] px-4 py-2.5 text-xs font-bold text-white disabled:opacity-60"><Send className="h-3.5 w-3.5" />{saveRates.isPending ? 'Submitting…' : 'Submit for LNDRY review'}</button>
+          <button type="button" onClick={() => { setShowForm(false); setDraftServiceId(undefined) }} className="rounded-xl border border-[#263f44]/15 px-4 py-2.5 text-xs font-bold text-[#4f485e]">Do this later</button>
+        </div>
+      </div>}
+    </div> : null}
+
+    <div className="divide-y divide-[#263f44]/8">
+      {myServices.isLoading ? <div className="p-8 text-center text-sm text-[#718087]">Loading your service requests…</div> : null}
+      {!myServices.isLoading && !services.length ? <VisualEmptyState kind="orders" compact title="No service requests yet" detail="Services you request here will show up alongside your existing marketplace services." /> : null}
+      {services.map((service) => <div key={service.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5">
+        <div><p className="font-bold text-[#27454c]">{service.name}</p><p className="text-xs text-[#718087]">{service.categoryName || 'Uncategorised'}</p>{service.approvalStatus === 'REJECTED' && service.rejectionReason ? <p className="mt-1 text-xs text-[#a44036]">{service.rejectionReason}</p> : null}</div>
+        {statusBadge(service.approvalStatus)}
+      </div>)}
+    </div>
+  </section>
 }
 
 function Metric({ icon, label, value, accent }: { icon?: React.ReactNode; label: string; value: string; accent: 'teal' | 'amber' | 'blue' | 'violet' | 'slate' }) {
